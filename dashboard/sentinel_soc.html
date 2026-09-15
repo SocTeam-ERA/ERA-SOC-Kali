@@ -1,0 +1,778 @@
+<title>Sentinel SOC</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
+<style>
+/* ============================================================= *
+ *  SENTINEL SOC — committed dark "phosphor terminal" world.
+ *  Single visual theme by design (a SOC video wall), so colors
+ *  are painted explicitly and there is no light variant.
+ * ============================================================= */
+:root{
+  --bg:#070b08; --bg-2:#0a0f0b; --panel:#0d140f; --panel-2:#111a13;
+  --border:#1b2a1f; --border-2:#25382b; --grid:#16241a;
+  --ink:#d9f7e0; --ink-2:#8dab95; --ink-3:#5d786500; --muted:#607a68;
+  --accent:#00ff7b; --accent-dim:#12c06e; --accent-ink:#032a16;
+  --crit:#ff5c5c; --med:#f5a623; --norm:#14d19a;
+  --crit-bg:rgba(255,92,92,.13); --med-bg:rgba(245,166,35,.13); --norm-bg:rgba(20,209,154,.12);
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+  --sans:"IBM Plex Sans",system-ui,-apple-system,Segoe UI,sans-serif;
+  --r:10px; --r-sm:7px;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{
+  background:var(--bg); color:var(--ink); font-family:var(--sans);
+  font-size:14px; line-height:1.5; -webkit-font-smoothing:antialiased;
+  background-image:
+     radial-gradient(1200px 600px at 80% -10%, rgba(0,255,123,.05), transparent 60%),
+     linear-gradient(0deg, var(--bg), var(--bg-2));
+  min-height:100vh;
+}
+.mono{font-family:var(--mono)}
+.tnum{font-variant-numeric:tabular-nums}
+a{color:var(--accent)}
+::selection{background:rgba(0,255,123,.28); color:#eafff2}
+
+/* scrollbars */
+*::-webkit-scrollbar{width:10px;height:10px}
+*::-webkit-scrollbar-thumb{background:#1d2c21;border-radius:20px;border:2px solid var(--bg)}
+*::-webkit-scrollbar-track{background:transparent}
+
+/* ---------------- command bar ---------------- */
+header.cmd{
+  position:sticky; top:0; z-index:40; display:flex; align-items:center; gap:20px;
+  padding:12px 20px; background:rgba(8,12,9,.86); backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--border);
+}
+.brand{display:flex; align-items:center; gap:11px; min-width:0}
+.logo{
+  width:34px;height:34px;border-radius:9px;display:grid;place-items:center;flex:none;
+  background:radial-gradient(circle at 30% 25%, #0c3a22, #071c11);
+  border:1px solid #1c5c39; box-shadow:0 0 0 1px #04160c, 0 0 18px rgba(0,255,123,.25) inset;
+  color:var(--accent); font-family:var(--mono); font-weight:700; font-size:18px;
+}
+.brand .name{font-family:var(--mono); font-weight:700; letter-spacing:.06em; font-size:15px}
+.brand .name b{color:var(--accent)}
+.brand .sub{font-size:11px; color:var(--ink-2); letter-spacing:.08em; text-transform:uppercase}
+.spacer{flex:1}
+.stat-led{display:flex; align-items:center; gap:8px; font-family:var(--mono); font-size:12px; color:var(--ink-2)}
+.led{width:9px;height:9px;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 10px var(--accent); animation:pulse 2.4s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+.clock{font-family:var(--mono); text-align:right; line-height:1.25}
+.clock .t{font-size:15px; font-weight:600; color:var(--ink)}
+.clock .d{font-size:10.5px; color:var(--muted); letter-spacing:.05em}
+.op{display:flex;align-items:center;gap:8px;font-family:var(--mono);font-size:12px;color:var(--ink-2);
+  padding-left:16px;border-left:1px solid var(--border)}
+.op .av{width:26px;height:26px;border-radius:50%;background:#0f2a1c;border:1px solid #235c3d;
+  display:grid;place-items:center;color:var(--accent);font-weight:600;font-size:11px}
+.livebtn{
+  font-family:var(--mono); font-size:11.5px; font-weight:600; letter-spacing:.08em;
+  display:flex;align-items:center;gap:7px; padding:7px 12px; border-radius:20px; cursor:pointer;
+  background:var(--norm-bg); color:var(--norm); border:1px solid rgba(20,209,154,.4);
+  transition:.15s;
+}
+.livebtn .dot{width:7px;height:7px;border-radius:50%;background:var(--norm);box-shadow:0 0 8px var(--norm)}
+.livebtn.paused{background:#14140f; color:var(--muted); border-color:var(--border-2)}
+.livebtn.paused .dot{background:var(--muted);box-shadow:none;animation:none}
+.livebtn:not(.paused) .dot{animation:pulse 1.3s infinite}
+
+/* ---------------- layout ---------------- */
+main{max-width:1560px; margin:0 auto; padding:20px; display:flex; flex-direction:column; gap:16px}
+.panel{background:linear-gradient(180deg,var(--panel-2),var(--panel));
+  border:1px solid var(--border); border-radius:var(--r)}
+.panel-h{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border)}
+.panel-h h2{margin:0;font-size:12px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2);
+  font-family:var(--mono)}
+.panel-h .accent-tick{width:8px;height:8px;border-radius:2px;background:var(--accent);box-shadow:0 0 8px var(--accent)}
+.panel-h .meta{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--muted)}
+
+/* ---------------- KPI tiles ---------------- */
+.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px}
+.kpi{position:relative;overflow:hidden;padding:15px 16px 14px;border-radius:var(--r);
+  background:linear-gradient(180deg,var(--panel-2),var(--panel));border:1px solid var(--border)}
+.kpi .lab{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted)}
+.kpi .val{font-family:var(--mono);font-weight:700;font-size:30px;line-height:1.1;margin-top:6px;color:var(--ink)}
+.kpi .foot{font-size:11px;color:var(--ink-2);margin-top:3px;font-family:var(--mono)}
+.kpi .stripe{position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--accent-dim)}
+.kpi.crit .stripe{background:var(--crit);box-shadow:0 0 14px var(--crit)}
+.kpi.crit .val{color:var(--crit)}
+.kpi.med .stripe{background:var(--med)} .kpi.med .val{color:var(--med)}
+.kpi.norm .stripe{background:var(--norm)} .kpi.norm .val{color:var(--norm)}
+.kpi.crit{background:linear-gradient(180deg,rgba(255,92,92,.06),var(--panel))}
+.spark{position:absolute;right:12px;top:12px;opacity:.85}
+
+/* ---------------- charts row ---------------- */
+.row{display:grid;grid-template-columns:1.55fr 1fr;gap:16px}
+.chart-wrap{padding:14px 16px 16px}
+.legend{display:flex;gap:16px;flex-wrap:wrap;align-items:center;font-family:var(--mono);font-size:11px;color:var(--ink-2)}
+.legend .it{display:flex;align-items:center;gap:6px}
+.legend .sw{width:10px;height:10px;border-radius:3px}
+svg{display:block;width:100%;overflow:visible}
+.axis text{font-family:var(--mono);font-size:10px;fill:var(--muted)}
+.axis line,.axis path{stroke:var(--grid)}
+.gridline{stroke:var(--grid);stroke-width:1}
+.col-hit{fill:transparent;cursor:pointer}
+.col-hit:hover + .col-group rect, .col-group.hot rect{filter:brightness(1.25)}
+
+.subrow{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+/* horizontal bars */
+.hbar{display:flex;flex-direction:column;gap:11px;padding:15px 16px}
+.hbar .item{display:grid;grid-template-columns:120px 1fr auto;gap:10px;align-items:center;font-size:12.5px}
+.hbar .k{font-family:var(--mono);color:var(--ink-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hbar .track{height:9px;background:#0c130e;border-radius:6px;overflow:hidden;border:1px solid var(--border)}
+.hbar .fill{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--accent-dim),var(--accent));
+  box-shadow:0 0 10px rgba(0,255,123,.4)}
+.hbar .v{font-family:var(--mono);color:var(--ink);font-weight:600;min-width:26px;text-align:right}
+.hbar .ip .k{color:var(--ink)}
+.hbar .flag{font-size:9.5px;font-family:var(--mono);color:var(--crit);border:1px solid rgba(255,92,92,.4);
+  padding:1px 5px;border-radius:20px;background:var(--crit-bg);margin-left:6px}
+
+/* ---------------- filter bar ---------------- */
+.filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px}
+.chipset{display:flex;gap:6px}
+.chip{font-family:var(--mono);font-size:11.5px;letter-spacing:.03em;padding:6px 11px;border-radius:20px;cursor:pointer;
+  background:#0c130e;border:1px solid var(--border-2);color:var(--ink-2);transition:.13s;white-space:nowrap}
+.chip:hover{border-color:var(--accent-dim);color:var(--ink)}
+.chip.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+.chip.on.crit{background:var(--crit);border-color:var(--crit);color:#2a0808}
+.chip.on.med{background:var(--med);border-color:var(--med);color:#241701}
+.chip.on.norm{background:var(--norm);border-color:var(--norm);color:#04231a}
+.search{flex:1;min-width:180px;display:flex;align-items:center;gap:8px;background:#0c130e;
+  border:1px solid var(--border-2);border-radius:8px;padding:8px 12px}
+.search:focus-within{border-color:var(--accent-dim);box-shadow:0 0 0 3px rgba(0,255,123,.08)}
+.search input{background:transparent;border:0;outline:0;color:var(--ink);font-family:var(--mono);font-size:12.5px;width:100%}
+.search input::placeholder{color:var(--muted)}
+.search .pf{color:var(--accent);font-family:var(--mono);font-size:12px}
+.rescount{font-family:var(--mono);font-size:11.5px;color:var(--muted);white-space:nowrap}
+.txtbtn{font-family:var(--mono);font-size:11px;color:var(--ink-2);cursor:pointer;background:none;border:0;text-decoration:underline}
+
+/* ---------------- event table ---------------- */
+.tablewrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;min-width:920px}
+thead th{position:sticky;top:0;background:var(--panel);z-index:1;
+  font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);
+  text-align:left;padding:10px 14px;border-bottom:1px solid var(--border);font-weight:600;cursor:default}
+tbody tr{border-bottom:1px solid #121b14;cursor:pointer;transition:background .1s}
+tbody tr:hover{background:rgba(0,255,123,.045)}
+tbody tr.sel{background:rgba(0,255,123,.08)}
+tbody td{padding:10px 14px;vertical-align:middle}
+td.time{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);white-space:nowrap}
+td.time .ago{color:var(--muted);font-size:10px;display:block}
+.sevcell{display:flex;align-items:center;gap:8px}
+.sevstripe{width:4px;height:26px;border-radius:3px;flex:none}
+.pill{font-family:var(--mono);font-size:10px;font-weight:700;letter-spacing:.07em;padding:3px 8px;border-radius:5px;
+  text-transform:uppercase;white-space:nowrap;display:inline-flex;align-items:center;gap:5px}
+.pill.crit{background:var(--crit-bg);color:var(--crit);border:1px solid rgba(255,92,92,.35)}
+.pill.med{background:var(--med-bg);color:var(--med);border:1px solid rgba(245,166,35,.35)}
+.pill.norm{background:var(--norm-bg);color:var(--norm);border:1px solid rgba(20,209,154,.35)}
+.typetag{font-family:var(--mono);font-size:11px;color:var(--ink);white-space:nowrap;
+  display:inline-flex;align-items:center;gap:7px}
+.typetag .ic{width:16px;text-align:center;opacity:.9}
+.evt{max-width:420px}
+.evt .t{color:var(--ink);font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mono-cell{font-family:var(--mono);font-size:12px;color:var(--ink-2);white-space:nowrap}
+.mono-cell.ip{color:var(--ink)}
+.status{font-family:var(--mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+  padding:2px 8px;border-radius:20px;border:1px solid var(--border-2);color:var(--ink-2);background:#0c130e}
+.status.open{color:var(--crit);border-color:rgba(255,92,92,.3)}
+.status.acknowledged{color:var(--med);border-color:rgba(245,166,35,.3)}
+.status.resolved{color:var(--muted)}
+.newflash{animation:flash 1.6s ease-out}
+@keyframes flash{0%{background:rgba(0,255,123,.22)}100%{background:transparent}}
+
+/* ---------------- detail drawer ---------------- */
+.drawer-bg{position:fixed;inset:0;background:rgba(2,6,3,.55);backdrop-filter:blur(2px);
+  opacity:0;pointer-events:none;transition:.2s;z-index:60}
+.drawer-bg.show{opacity:1;pointer-events:auto}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:460px;max-width:92vw;z-index:61;
+  background:linear-gradient(180deg,var(--panel-2),var(--panel));border-left:1px solid var(--border-2);
+  transform:translateX(100%);transition:transform .22s cubic-bezier(.2,.7,.2,1);
+  display:flex;flex-direction:column;box-shadow:-30px 0 60px rgba(0,0,0,.5)}
+.drawer.show{transform:none}
+.drawer .dh{padding:16px 18px;border-bottom:1px solid var(--border);display:flex;align-items:flex-start;gap:12px}
+.drawer .dh .x{margin-left:auto;background:none;border:0;color:var(--ink-2);font-size:20px;cursor:pointer;line-height:1}
+.drawer .db{padding:16px 18px;overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:16px}
+.dfield{display:flex;flex-direction:column;gap:4px}
+.dfield .l{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)}
+.dfield .v{font-family:var(--mono);font-size:13px;color:var(--ink);word-break:break-all}
+.dgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.reasons{display:flex;flex-direction:column;gap:7px}
+.reasons .r{display:flex;gap:9px;font-size:12.5px;color:var(--ink-2);font-family:var(--mono);
+  background:#0c130e;border:1px solid var(--border);border-radius:7px;padding:8px 10px}
+.reasons .r::before{content:"▸";color:var(--accent)}
+.jsonbox{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);background:#080d09;border:1px solid var(--border);
+  border-radius:8px;padding:12px;white-space:pre-wrap;word-break:break-word;max-height:220px;overflow:auto}
+.dactions{display:flex;gap:9px;padding:14px 18px;border-top:1px solid var(--border)}
+.btn{flex:1;font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.04em;padding:10px;border-radius:8px;
+  cursor:pointer;border:1px solid var(--border-2);background:#0c130e;color:var(--ink);transition:.13s}
+.btn:hover{border-color:var(--accent-dim)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent)}
+.btn.warn{color:var(--med);border-color:rgba(245,166,35,.4)}
+
+/* tooltip */
+.tip{position:fixed;z-index:80;pointer-events:none;opacity:0;transition:opacity .1s;
+  background:#0a120c;border:1px solid var(--border-2);border-radius:8px;padding:9px 11px;
+  font-family:var(--mono);font-size:11.5px;color:var(--ink);box-shadow:0 10px 30px rgba(0,0,0,.5);min-width:150px}
+.tip .th{color:var(--muted);font-size:10px;letter-spacing:.06em;margin-bottom:6px}
+.tip .tr{display:flex;justify-content:space-between;gap:16px;line-height:1.7}
+.tip .tr .sw{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:middle}
+
+.foot-note{color:var(--muted);font-family:var(--mono);font-size:11px;text-align:center;padding:6px 0 4px;line-height:1.7}
+.foot-note b{color:var(--ink-2);font-weight:500}
+
+@media (max-width:1080px){
+  .kpis{grid-template-columns:repeat(3,1fr)}
+  .row{grid-template-columns:1fr}
+  .subrow{grid-template-columns:1fr}
+}
+@media (max-width:620px){
+  .kpis{grid-template-columns:repeat(2,1fr)}
+  .op,.clock .d{display:none}
+  header.cmd{gap:12px;padding:10px 14px}
+  main{padding:14px}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+
+<header class="cmd">
+  <div class="brand">
+    <div class="logo">◉</div>
+    <div>
+      <div class="name">SENTINEL<b>//</b>SOC</div>
+      <div class="sub">Threat Monitoring Console</div>
+    </div>
+  </div>
+  <div class="spacer"></div>
+  <div class="stat-led"><span class="led"></span><span id="feedstat">FEED LIVE</span></div>
+  <button class="livebtn" id="livebtn"><span class="dot"></span><span id="livelabel">LIVE</span></button>
+  <div class="clock">
+    <div class="t tnum" id="clock-local">--:--:--</div>
+    <div class="d" id="clock-utc">-- UTC</div>
+  </div>
+  <div class="op"><span class="av">AC</span><span>analyst@kali · ARTURO</span></div>
+</header>
+
+<main>
+  <section class="kpis" id="kpis"></section>
+
+  <div class="row">
+    <section class="panel">
+      <div class="panel-h"><span class="accent-tick"></span><h2>Event Volume · Last 12 Hours</h2>
+        <span class="meta" id="tl-meta"></span></div>
+      <div class="chart-wrap">
+        <div class="legend" style="margin-bottom:10px">
+          <span class="it"><span class="sw" style="background:var(--crit)"></span>Critical</span>
+          <span class="it"><span class="sw" style="background:var(--med)"></span>Medium</span>
+          <span class="it"><span class="sw" style="background:var(--norm)"></span>Normal</span>
+        </div>
+        <svg id="timeline" viewBox="0 0 720 210" preserveAspectRatio="none" aria-label="Event volume histogram"></svg>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="panel-h"><span class="accent-tick"></span><h2>Alerts by Type</h2></div>
+      <div class="hbar" id="bytype"></div>
+    </section>
+  </div>
+
+  <div class="subrow">
+    <section class="panel">
+      <div class="panel-h"><span class="accent-tick"></span><h2>Top Source IPs</h2>
+        <span class="meta">by event count</span></div>
+      <div class="hbar" id="topips"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-h"><span class="accent-tick"></span><h2>Detection Sources</h2>
+        <span class="meta">script → alerts</span></div>
+      <div class="hbar" id="bysource"></div>
+    </section>
+  </div>
+
+  <section class="panel">
+    <div class="filters">
+      <div class="chipset" id="sevchips">
+        <span class="chip on" data-sev="all">ALL</span>
+        <span class="chip" data-sev="critical">CRITICAL</span>
+        <span class="chip" data-sev="medium">MEDIUM</span>
+        <span class="chip" data-sev="normal">NORMAL</span>
+      </div>
+      <div class="chipset" id="typechips">
+        <span class="chip on" data-type="all">ALL TYPES</span>
+        <span class="chip" data-type="intrusion">INTRUSION</span>
+        <span class="chip" data-type="port_scan">PORT</span>
+        <span class="chip" data-type="phishing">PHISHING</span>
+        <span class="chip" data-type="malware">MALWARE</span>
+        <span class="chip" data-type="vuln">VULN</span>
+      </div>
+      <label class="search"><span class="pf">›</span>
+        <input id="search" placeholder="filter events — ip, host, user, keyword…" autocomplete="off">
+      </label>
+      <span class="rescount" id="rescount"></span>
+      <button class="txtbtn" id="clearbtn">reset</button>
+    </div>
+    <div class="panel-h" style="border-top:1px solid var(--border)">
+      <span class="accent-tick"></span><h2>Live Event Stream</h2>
+      <span class="meta" id="stream-meta"></span>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th style="width:120px">Time</th><th style="width:110px">Severity</th>
+          <th style="width:130px">Type</th><th>Event</th>
+          <th style="width:130px">Source IP</th><th style="width:120px">Host</th>
+          <th style="width:100px">User</th><th style="width:110px">Status</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="foot-note">
+    <b>PROTOTYPE</b> · sample data generated in-browser for demonstration ·
+    in production this feed reads <b>data/alerts.json</b> written by the Python detectors &amp; the Kali scan suite<br>
+    Sentinel SOC · black-box monitoring for intrusions · phishing · malware · open ports · network vulns
+  </div>
+</main>
+
+<div class="drawer-bg" id="drawerbg"></div>
+<aside class="drawer" id="drawer" aria-hidden="true"></aside>
+<div class="tip" id="tip"></div>
+
+<script>
+/* =============================================================
+ *  Sentinel SOC — prototype front-end.
+ *  DATA: For this self-contained demo we synthesize alerts in the
+ *  same schema the Python detectors emit (see scripts/soc_core.py).
+ *  In deployment, replace generateAlerts() with a poll of
+ *  data/alerts.json — the field names are identical.
+ * ============================================================= */
+const SEV = {
+  critical:{c:'var(--crit)', k:'crit'}, medium:{c:'var(--med)', k:'med'}, normal:{c:'var(--norm)', k:'norm'}
+};
+const TYPE_ICON = {intrusion:'⚿', port_scan:'⊞', phishing:'✉', malware:'☣', vuln:'⚠'};
+const TYPE_LABEL = {intrusion:'INTRUSION', port_scan:'PORT SCAN', phishing:'PHISHING', malware:'MALWARE', vuln:'VULN'};
+
+/* ---- synthetic-but-realistic alert generator ---- */
+const INT_IPS=['10.10.10.24','10.10.10.31','10.10.20.14','10.10.20.15','10.10.30.4','10.10.10.7','10.10.20.9'];
+const EXT_IPS=['203.0.113.77','198.51.100.9','45.83.12.201','185.220.101.4','91.219.236.18','103.94.185.22','193.27.14.66'];
+const USERS=['jsmith','mgarcia','administrator','root','svc_backup','adominguez','helpdesk','kdenton'];
+const HOSTS=['WKS-JSMITH','WKS-MGARCIA','DC01','FILE-SRV','WEB01','MAIL01','APP-SRV','—'];
+const rnd=a=>a[Math.floor(Math.random()*a.length)];
+const ri=(a,b)=>Math.floor(Math.random()*(b-a+1))+a;
+let _id=1;
+
+const TEMPLATES=[
+ ()=>{const ip=rnd(EXT_IPS),n=ri(6,38),u=rnd(['root','administrator','svc_backup']);return{type:'intrusion',severity:'critical',
+   title:`Brute-force: ${n} failed logins from ${ip}`, source_ip:ip, user:u, host:'DC01',
+   detector:'login_monitor', description:`${n} failed SSH authentication attempts from ${ip} targeting '${u}'.`,
+   details:{failures:n, admin_target:true, known_ip:false}}},
+ ()=>{const ip=rnd(EXT_IPS),n=ri(8,30),u=rnd(USERS);return{type:'intrusion',severity:'critical',
+   title:`Successful login after ${n} failures — possible compromise (${ip})`, source_ip:ip, user:u, host:rnd(HOSTS),
+   detector:'login_monitor', description:`'${u}' authenticated from ${ip} right after ${n} failures. Brute-force-succeeded pattern.`,
+   details:{prior_failures:n, known_ip:false}}},
+ ()=>{const ip=rnd(EXT_IPS),u=rnd(USERS);return{type:'intrusion',severity:'medium',
+   title:`Login from NEW IP ${ip} (user '${u}')`, source_ip:ip, user:u, host:rnd(HOSTS),
+   detector:'login_monitor', description:`'${u}' logged in from ${ip}, outside the trusted IP ranges.`,
+   details:{known_ip:false}}},
+ ()=>{const ip=rnd(INT_IPS),u=rnd(USERS);return{type:'intrusion',severity:'normal',
+   title:`Login: ${u} from ${ip}`, source_ip:ip, user:u, host:rnd(HOSTS.slice(0,3)),
+   detector:'login_monitor', description:`'${u}' logged in from ${ip}.`, details:{known_ip:true}}},
+ ()=>{const ip=rnd([...INT_IPS,...EXT_IPS]);return{type:'port_scan',severity:'critical',
+   title:`Open port 3389/tcp (RDP) on ${ip} (not in baseline)`, source_ip:ip, host:rnd(HOSTS),
+   detector:'port_scanner', description:`RDP exposed on ${ip}, outside the approved baseline.`,
+   details:{port:3389, service:'RDP', unexpected:true}}},
+ ()=>{const ip=rnd(INT_IPS);return{type:'port_scan',severity:'critical',
+   title:`Open port 445/tcp (SMB) on ${ip}`, source_ip:ip, host:rnd(HOSTS),
+   detector:'kali_scan', description:`SMB reachable on ${ip}. Restrict to management VLAN.`,
+   details:{port:445, service:'SMB'}}},
+ ()=>{const ip=rnd(INT_IPS),p=rnd([22,8080,3306,21]),s={22:'SSH',8080:'HTTP-alt',3306:'MySQL',21:'FTP'};return{type:'port_scan',severity:'medium',
+   title:`Open port ${p}/tcp (${s[p]}) on ${ip}`, source_ip:ip, host:rnd(HOSTS),
+   detector:'port_scanner', description:`${ip} exposes ${s[p]} on port ${p}.`, details:{port:p, service:s[p]}}},
+ ()=>{const ip=rnd(EXT_IPS);return{type:'phishing',severity:'critical',
+   title:`Phishing: "Unusual sign-in activity — verify your account"`, source_ip:ip, user:'security@micros0ft-support.com',
+   detector:'phishing_detector', description:`Credential-harvest email. SPF/DKIM/DMARC fail, link points to raw IP, urgency lure.`,
+   details:{score:14, reasons:['SPF fail','DKIM fail','DMARC fail','Reply-To domain differs','Link to raw IP','Credential lure']}}},
+ ()=>{const ip=rnd(EXT_IPS);return{type:'phishing',severity:'medium',
+   title:`Phishing: "Invoice attached — payment overdue"`, source_ip:ip, user:'billing@acme-invoices.co',
+   detector:'phishing_detector', description:`Invoice lure with macro-enabled attachment.`,
+   details:{score:6, reasons:['Macro-enabled attachment','Payment lure','Return-Path mismatch']}}},
+ ()=>{return{type:'malware',severity:'critical',
+   title:`Suspicious file: invoice.pdf.exe`, source_ip:null, host:rnd(HOSTS),
+   detector:'malware_detector', description:`File claims to be a PDF but is a Windows PE executable; double extension.`,
+   details:{sha256:'a3f5…9c21', reasons:['Claims .pdf but is PE executable','Double extension','High entropy 7.4/8']}}},
+ ()=>{return{type:'malware',severity:'medium',
+   title:`Suspicious file: q3_update.docm`, source_ip:null, host:rnd(HOSTS),
+   detector:'malware_detector', description:`Macro-enabled Office document with AutoOpen macro.`,
+   details:{reasons:['Macro-enabled Office document','Suspicious VBA AutoOpen']}}},
+ ()=>{const ip=rnd(INT_IPS);return{type:'vuln',severity:'critical',
+   title:`SMB RCE (MS17-010 / EternalBlue) on ${ip}`, source_ip:ip, host:rnd(HOSTS),
+   detector:'kali_scan', description:`nmap smb-vuln-ms17-010 reports host VULNERABLE to remote code execution.`,
+   details:{port:445, script:'smb-vuln-ms17-010', cve:'CVE-2017-0143'}}},
+ ()=>{const ip=rnd(INT_IPS);return{type:'vuln',severity:'medium',
+   title:`Weak TLS (TLS 1.0 enabled) on ${ip}:443`, source_ip:ip, host:rnd(HOSTS),
+   detector:'kali_scan', description:`Legacy TLS 1.0 accepted on ${ip}. Disable deprecated protocols.`,
+   details:{port:443, script:'ssl-enum-ciphers'}}},
+];
+
+function mkAlert(tsOffsetMs){
+  const base = rnd(TEMPLATES)();
+  return Object.assign({
+    id: 'evt-'+(_id++),
+    timestamp: Date.now() - tsOffsetMs,
+    status: rnd(['open','open','open','open','acknowledged','resolved'])
+  }, base);
+}
+function generateAlerts(n){
+  const out=[];
+  for(let i=0;i<n;i++) out.push(mkAlert(ri(20,12*3600)*1000)); // spread over 12h
+  return out.sort((a,b)=>b.timestamp-a.timestamp);
+}
+
+let ALERTS = [];
+let DATA_MODE = 'demo';         // 'file' when data/alerts.json is reachable
+const seenIds = new Set();
+
+/* ---- filter state ---- */
+const state={sev:'all', type:'all', q:'', selected:null};
+
+function filtered(){
+  return ALERTS.filter(a=>{
+    if(state.sev!=='all' && a.severity!==state.sev) return false;
+    if(state.type!=='all' && a.type!==state.type) return false;
+    if(state.q){
+      const hay=(a.title+' '+(a.source_ip||'')+' '+(a.host||'')+' '+(a.user||'')+' '+a.type+' '+(a.description||'')).toLowerCase();
+      if(!hay.includes(state.q.toLowerCase())) return false;
+    }
+    return true;
+  });
+}
+
+/* ---- time helpers ---- */
+function ago(ts){
+  const s=Math.floor((Date.now()-ts)/1000);
+  if(s<60) return s+'s ago';
+  if(s<3600) return Math.floor(s/60)+'m ago';
+  return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m ago';
+}
+function hhmmss(ts){const d=new Date(ts);return d.toTimeString().slice(0,8);}
+
+/* ---- KPI render ---- */
+function renderKPIs(){
+  const open=ALERTS.filter(a=>a.status==='open').length;
+  const c=n=>ALERTS.filter(a=>a.severity===n).length;
+  const hosts=new Set(ALERTS.map(a=>a.host).filter(h=>h&&h!=='—')).size;
+  const tiles=[
+    {lab:'Total Events', val:ALERTS.length, foot:'last 12h', cls:''},
+    {lab:'Critical', val:c('critical'), foot:'immediate triage', cls:'crit'},
+    {lab:'Medium', val:c('medium'), foot:'review queue', cls:'med'},
+    {lab:'Normal', val:c('normal'), foot:'baseline', cls:'norm'},
+    {lab:'Open', val:open, foot:'unresolved', cls:''},
+    {lab:'Hosts Seen', val:hosts, foot:'across VLANs', cls:''},
+  ];
+  document.getElementById('kpis').innerHTML = tiles.map(t=>`
+    <div class="kpi ${t.cls}"><div class="stripe"></div>
+      <div class="lab">${t.lab}</div>
+      <div class="val tnum">${t.val}</div>
+      <div class="foot">${t.foot}</div>
+    </div>`).join('');
+}
+
+/* ---- timeline (stacked columns by severity) ---- */
+function renderTimeline(){
+  const W=720,H=210,padL=26,padB=22,padT=8,padR=6;
+  const now=Date.now(), hourMs=3600*1000, buckets=12;
+  const data=[];
+  for(let i=buckets-1;i>=0;i--){
+    const end=now-(i*hourMs), start=end-hourMs;
+    const inb=ALERTS.filter(a=>a.timestamp>=start&&a.timestamp<end);
+    data.push({start,end,
+      critical:inb.filter(a=>a.severity==='critical').length,
+      medium:inb.filter(a=>a.severity==='medium').length,
+      normal:inb.filter(a=>a.severity==='normal').length});
+  }
+  const max=Math.max(4,...data.map(d=>d.critical+d.medium+d.normal));
+  const plotW=W-padL-padR, plotH=H-padB-padT;
+  const bw=plotW/buckets, gap=6, cw=bw-gap;
+  const y=v=>padT+plotH-(v/max)*plotH;
+  let svg='';
+  // gridlines
+  for(let g=0;g<=4;g++){const gy=padT+plotH*(g/4);const val=Math.round(max*(1-g/4));
+    svg+=`<line class="gridline" x1="${padL}" y1="${gy.toFixed(1)}" x2="${W-padR}" y2="${gy.toFixed(1)}"/>`;
+    svg+=`<text class="axis" x="${padL-6}" y="${gy+3}" text-anchor="end" style="font-size:9px">${val}</text>`;}
+  data.forEach((d,i)=>{
+    const x=padL+i*bw+gap/2;
+    let yb=padT+plotH;
+    const segs=[['normal',d.normal,'var(--norm)'],['medium',d.medium,'var(--med)'],['critical',d.critical,'var(--crit)']];
+    let group=`<g class="col-group" data-i="${i}">`;
+    segs.forEach(([k,v,col])=>{
+      if(v>0){const h=(v/max)*plotH; yb-=h;
+        group+=`<rect x="${x.toFixed(1)}" y="${(yb+1).toFixed(1)}" width="${cw.toFixed(1)}" height="${Math.max(0,h-2).toFixed(1)}" rx="2" fill="${col}"/>`;}
+    });
+    group+='</g>';
+    // hit area
+    svg+=`<rect class="col-hit" x="${(padL+i*bw).toFixed(1)}" y="${padT}" width="${bw.toFixed(1)}" height="${plotH}"
+        data-i="${i}" data-c="${d.critical}" data-m="${d.medium}" data-n="${d.normal}"
+        data-time="${new Date(d.start).toTimeString().slice(0,5)}"/>`+group;
+    // x labels every 2h
+    if(i%2===0){svg+=`<text class="axis" x="${(x+cw/2).toFixed(1)}" y="${H-6}" text-anchor="middle">${new Date(d.start).getHours().toString().padStart(2,'0')}:00</text>`;}
+  });
+  document.getElementById('timeline').innerHTML=svg;
+  document.getElementById('tl-meta').textContent='peak '+max+'/h';
+  // hover
+  const tl=document.getElementById('timeline');
+  tl.querySelectorAll('.col-hit').forEach(h=>{
+    h.addEventListener('mousemove',e=>{
+      showTip(e,`<div class="th">${h.dataset.time} – +1h</div>
+        <div class="tr"><span><span class="sw" style="background:var(--crit)"></span>Critical</span><span class="tnum">${h.dataset.c}</span></div>
+        <div class="tr"><span><span class="sw" style="background:var(--med)"></span>Medium</span><span class="tnum">${h.dataset.m}</span></div>
+        <div class="tr"><span><span class="sw" style="background:var(--norm)"></span>Normal</span><span class="tnum">${h.dataset.n}</span></div>`);
+      tl.querySelectorAll('.col-group').forEach(g=>g.classList.toggle('hot',g.dataset.i===h.dataset.i));
+    });
+    h.addEventListener('mouseleave',()=>{hideTip();tl.querySelectorAll('.col-group').forEach(g=>g.classList.remove('hot'));});
+  });
+}
+
+/* ---- horizontal bar panels ---- */
+function renderBars(elId, rows, opts={}){
+  const max=Math.max(1,...rows.map(r=>r.v));
+  document.getElementById(elId).innerHTML=rows.map(r=>`
+    <div class="item ${opts.ipClass?'ip':''}">
+      <div class="k" title="${r.k}">${opts.icon?`<span style="opacity:.8">${opts.icon(r)}</span> `:''}${r.k}${r.flag?`<span class="flag">${r.flag}</span>`:''}</div>
+      <div class="track"><div class="fill" style="width:${(r.v/max*100).toFixed(1)}%;${r.col?`background:${r.col};box-shadow:none`:''}"></div></div>
+      <div class="v tnum">${r.v}</div>
+    </div>`).join('');
+}
+function renderByType(){
+  const types=['intrusion','port_scan','phishing','malware','vuln'];
+  const rows=types.map(t=>({k:TYPE_LABEL[t], v:ALERTS.filter(a=>a.type===t).length}))
+    .sort((a,b)=>b.v-a.v);
+  renderBars('bytype', rows);
+}
+function renderTopIPs(){
+  const m={};
+  ALERTS.forEach(a=>{if(a.source_ip){m[a.source_ip]=(m[a.source_ip]||0)+1;}});
+  const ext=new Set(EXT_IPS);
+  const rows=Object.entries(m).map(([k,v])=>({k,v,flag:ext.has(k)?'EXTERNAL':null}))
+    .sort((a,b)=>b.v-a.v).slice(0,7);
+  renderBars('topips', rows, {ipClass:true});
+}
+function renderBySource(){
+  const m={};
+  ALERTS.forEach(a=>{m[a.detector]=(m[a.detector]||0)+1;});
+  const rows=Object.entries(m).map(([k,v])=>({k,v})).sort((a,b)=>b.v-a.v);
+  renderBars('bysource', rows);
+}
+
+/* ---- event table ---- */
+function rowHTML(a){
+  const s=SEV[a.severity];
+  return `<tr data-id="${a.id}" class="${a._new?'newflash':''} ${state.selected===a.id?'sel':''}">
+    <td class="time">${hhmmss(a.timestamp)}<span class="ago">${ago(a.timestamp)}</span></td>
+    <td><div class="sevcell"><span class="sevstripe" style="background:${s.c}"></span>
+      <span class="pill ${s.k}">${a.severity}</span></div></td>
+    <td><span class="typetag"><span class="ic">${TYPE_ICON[a.type]}</span>${TYPE_LABEL[a.type]}</span></td>
+    <td class="evt"><div class="t" title="${a.title.replace(/"/g,'&quot;')}">${a.title}</div></td>
+    <td><span class="mono-cell ip">${a.source_ip||'—'}</span></td>
+    <td><span class="mono-cell">${a.host||'—'}</span></td>
+    <td><span class="mono-cell">${a.user?a.user.split('@')[0]:'—'}</span></td>
+    <td><span class="status ${a.status}">${a.status}</span></td>
+  </tr>`;
+}
+function renderTable(){
+  const rows=filtered();
+  document.getElementById('tbody').innerHTML=rows.map(rowHTML).join('') ||
+    `<tr><td colspan="8" style="text-align:center;color:var(--muted);padding:30px;font-family:var(--mono)">no events match the current filter</td></tr>`;
+  document.getElementById('rescount').textContent=`${rows.length} / ${ALERTS.length} events`;
+  document.getElementById('stream-meta').textContent=`showing ${rows.length}`;
+  document.querySelectorAll('#tbody tr[data-id]').forEach(tr=>{
+    tr.addEventListener('click',()=>openDrawer(tr.dataset.id));
+  });
+  // clear the _new flag after paint
+  ALERTS.forEach(a=>a._new=false);
+}
+
+/* ---- detail drawer ---- */
+function openDrawer(id){
+  const a=ALERTS.find(x=>x.id===id); if(!a) return;
+  state.selected=id;
+  const s=SEV[a.severity];
+  const reasons=(a.details&&a.details.reasons)||[];
+  const dj=JSON.stringify(a.details||{},null,2);
+  document.getElementById('drawer').innerHTML=`
+    <div class="dh">
+      <div>
+        <div style="display:flex;gap:9px;align-items:center;margin-bottom:8px">
+          <span class="pill ${s.k}">${a.severity}</span>
+          <span class="typetag"><span class="ic">${TYPE_ICON[a.type]}</span>${TYPE_LABEL[a.type]}</span>
+        </div>
+        <div style="font-size:15px;color:var(--ink);line-height:1.4;max-width:340px">${a.title}</div>
+      </div>
+      <button class="x" id="drawerx">✕</button>
+    </div>
+    <div class="db">
+      <div class="dfield"><span class="l">Description</span><span class="v" style="font-family:var(--sans);color:var(--ink-2);font-size:13px">${a.description||'—'}</span></div>
+      <div class="dgrid">
+        <div class="dfield"><span class="l">Timestamp</span><span class="v">${new Date(a.timestamp).toISOString().replace('T',' ').slice(0,19)}Z</span></div>
+        <div class="dfield"><span class="l">Detector</span><span class="v">${a.detector}</span></div>
+        <div class="dfield"><span class="l">Source IP</span><span class="v">${a.source_ip||'—'}</span></div>
+        <div class="dfield"><span class="l">Hostname</span><span class="v">${a.host||'—'}</span></div>
+        <div class="dfield"><span class="l">User / Account</span><span class="v">${a.user||'—'}</span></div>
+        <div class="dfield"><span class="l">Status</span><span class="v" id="d-status">${a.status}</span></div>
+      </div>
+      ${reasons.length?`<div class="dfield"><span class="l">Indicators (${reasons.length})</span>
+        <div class="reasons">${reasons.map(r=>`<div class="r">${r}</div>`).join('')}</div></div>`:''}
+      <div class="dfield"><span class="l">Raw details</span><div class="jsonbox">${dj.replace(/</g,'&lt;')}</div></div>
+      <div class="dfield"><span class="l">Alert ID</span><span class="v">${a.id}</span></div>
+    </div>
+    <div class="dactions">
+      <button class="btn primary" data-act="acknowledged">Acknowledge</button>
+      <button class="btn warn" data-act="resolved">Resolve</button>
+    </div>`;
+  document.getElementById('drawer').classList.add('show');
+  document.getElementById('drawer').setAttribute('aria-hidden','false');
+  document.getElementById('drawerbg').classList.add('show');
+  document.getElementById('drawerx').onclick=closeDrawer;
+  document.querySelectorAll('.dactions .btn').forEach(b=>b.onclick=()=>{
+    a.status=b.dataset.act; renderTable(); renderKPIs();
+    document.getElementById('d-status').textContent=a.status;
+  });
+  renderTable();
+}
+function closeDrawer(){
+  state.selected=null;
+  document.getElementById('drawer').classList.remove('show');
+  document.getElementById('drawer').setAttribute('aria-hidden','true');
+  document.getElementById('drawerbg').classList.remove('show');
+  renderTable();
+}
+document.getElementById('drawerbg').addEventListener('click',closeDrawer);
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer();});
+
+/* ---- tooltip ---- */
+const tipEl=document.getElementById('tip');
+function showTip(e,html){tipEl.innerHTML=html;tipEl.style.opacity='1';
+  let x=e.clientX+14,y=e.clientY+14;
+  if(x+180>innerWidth)x=e.clientX-180; if(y+120>innerHeight)y=e.clientY-120;
+  tipEl.style.left=x+'px';tipEl.style.top=y+'px';}
+function hideTip(){tipEl.style.opacity='0';}
+
+/* ---- filters wiring ---- */
+document.getElementById('sevchips').addEventListener('click',e=>{
+  const c=e.target.closest('.chip'); if(!c)return;
+  state.sev=c.dataset.sev;
+  document.querySelectorAll('#sevchips .chip').forEach(x=>{
+    x.classList.toggle('on',x===c);
+    x.classList.remove('crit','med','norm');
+    if(x===c&&c.dataset.sev!=='all')x.classList.add(SEV[c.dataset.sev].k);
+  });
+  renderTable();
+});
+document.getElementById('typechips').addEventListener('click',e=>{
+  const c=e.target.closest('.chip'); if(!c)return;
+  state.type=c.dataset.type;
+  document.querySelectorAll('#typechips .chip').forEach(x=>x.classList.toggle('on',x===c));
+  renderTable();
+});
+document.getElementById('search').addEventListener('input',e=>{state.q=e.target.value;renderTable();});
+document.getElementById('clearbtn').addEventListener('click',()=>{
+  state.sev='all';state.type='all';state.q='';document.getElementById('search').value='';
+  document.querySelectorAll('#sevchips .chip').forEach(x=>{x.classList.toggle('on',x.dataset.sev==='all');x.classList.remove('crit','med','norm');});
+  document.querySelectorAll('#typechips .chip').forEach(x=>x.classList.toggle('on',x.dataset.type==='all'));
+  renderTable();
+});
+
+/* ---- clock ---- */
+function tick(){
+  const d=new Date();
+  document.getElementById('clock-local').textContent=d.toTimeString().slice(0,8);
+  document.getElementById('clock-utc').textContent=d.toISOString().slice(11,19)+' UTC · '+d.toISOString().slice(0,10);
+}
+setInterval(tick,1000); tick();
+
+/* =============================================================
+ *  DATA SOURCE
+ *  1) Try to read the REAL feed written by the Python detectors
+ *     and the Kali suite (data/alerts.json). Works when the folder
+ *     is served over HTTP (python3 -m http.server / nginx).
+ *  2) If that isn't reachable (e.g. the file was double-clicked and
+ *     opened as file://), fall back to in-browser demo data so the
+ *     dashboard still shows something for a quick look.
+ *  The two candidate paths cover both "served from project root"
+ *  and "HTML copied to a web root with data/ beside it".
+ * ============================================================= */
+const DATA_URLS=['data/alerts.json','../data/alerts.json'];
+function normalize(raw){
+  return raw.map(a=>({
+    id:a.id||('evt-'+Math.random().toString(36).slice(2,9)),
+    timestamp:(typeof a.timestamp==='string')?Date.parse(a.timestamp):(a.timestamp||Date.now()),
+    type:a.type, severity:a.severity, title:a.title||'(no title)',
+    source_ip:(a.source_ip!==undefined?a.source_ip:null),
+    host:(a.hostname!=null?a.hostname:(a.host!=null?a.host:null)),   // scripts use "hostname"
+    user:(a.user!=null?a.user:null),
+    description:a.description||'', detector:a.detector||'',
+    status:a.status||'open', details:a.details||{}
+  })).filter(a=>a.type&&a.severity).sort((x,y)=>y.timestamp-x.timestamp);
+}
+async function loadExternal(){
+  for(const u of DATA_URLS){
+    try{
+      const r=await fetch(u,{cache:'no-store'});
+      if(!r.ok) continue;
+      const raw=await r.json();
+      if(Array.isArray(raw)&&raw.length) return normalize(raw);
+    }catch(e){/* file:// or not served — ignore and try next */}
+  }
+  return null;
+}
+
+/* ---- LIVE feed ---- */
+let live=true, liveTimer=null;
+function renderAll(){renderKPIs();renderTimeline();renderByType();renderTopIPs();renderBySource();renderTable();}
+function pushDemo(){                 // demo mode: synthesize a new alert
+  const a=mkAlert(ri(2,25)*1000); a._new=true;
+  ALERTS.unshift(a);
+  if(ALERTS.length>220)ALERTS.length=220;
+  renderAll();
+}
+async function pollFile(){           // file mode: re-read alerts.json
+  const ext=await loadExternal();
+  if(ext){
+    ext.forEach(a=>{if(!seenIds.has(a.id))a._new=true;});
+    ALERTS=ext.slice(0,300);
+    ALERTS.forEach(a=>seenIds.add(a.id));
+    renderAll();
+  }
+}
+function scheduleLive(){
+  clearTimeout(liveTimer);
+  const delay = DATA_MODE==='file' ? 5000 : ri(3500,7000);
+  liveTimer=setTimeout(async()=>{ if(live){ await (DATA_MODE==='file'?pollFile():pushDemo()); } scheduleLive(); }, delay);
+}
+function setFeedStat(){
+  const el=document.getElementById('feedstat');
+  if(!live){el.textContent='FEED PAUSED';return;}
+  el.textContent = DATA_MODE==='file' ? 'FEED · alerts.json' : 'FEED LIVE · demo';
+}
+document.getElementById('livebtn').addEventListener('click',()=>{
+  live=!live;
+  document.getElementById('livebtn').classList.toggle('paused',!live);
+  document.getElementById('livelabel').textContent=live?'LIVE':'PAUSED';
+  setFeedStat();
+  if(live)scheduleLive(); else clearTimeout(liveTimer);
+});
+
+/* keep "x ago" fresh */
+setInterval(()=>{if(!state.q&&!document.getElementById('drawer').classList.contains('show'))renderTable();},15000);
+
+/* ---- init ---- */
+(async function init(){
+  const ext=await loadExternal();
+  if(ext){ DATA_MODE='file'; ALERTS=ext; ALERTS.forEach(a=>seenIds.add(a.id)); }
+  else   { DATA_MODE='demo'; ALERTS=generateAlerts(44); }
+  setFeedStat();
+  renderAll();
+  if(!window.matchMedia('(prefers-reduced-motion: reduce)').matches)scheduleLive();
+})();
+</script>

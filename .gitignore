@@ -1,0 +1,23 @@
+# Runtime data: alerts, state files, archives, digests -- not code.
+# Grows continuously by design; has its own retention (archive_alerts.py)
+# separate from source history.
+data/
+
+# Raw scan output (nmap XML/gnmap/.nmap/.log, arp dumps, traffic TSVs) --
+# disposable, already has its own retention (kali/cleanup_results.sh).
+kali/results/
+
+# Python bytecode caches
+__pycache__/
+*.pyc
+
+# team_keys/ is meant to hold PUBLIC keys (fine to track, they're public
+# by definition) -- this only guards against an accidental private key
+# landing anywhere in the repo, by its usual filename patterns.
+id_rsa
+id_ed25519
+id_ecdsa
+id_dsa
+*.pem
+*_rsa
+*_ed25519

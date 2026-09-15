@@ -1,0 +1,3 @@
+# Known-bad IPs (threat intel). One per line. Feed from MISP/AbuseCH/etc.
+185.220.101.4
+45.83.12.201

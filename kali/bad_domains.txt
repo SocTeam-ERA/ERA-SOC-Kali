@@ -1,0 +1,4 @@
+# Known-bad / suspicious domains. One per line. Substring match is applied.
+micros0ft-support.com
+secure-login-verify.tk
+acme-invoices.co

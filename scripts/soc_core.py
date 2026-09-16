@@ -23,6 +23,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import secrets
 import socket
 import ssl
 import tempfile
@@ -669,6 +670,68 @@ def set_alert_status(alert_id: str, status: str, note: str = "", actor: str = ""
         }) + "\n")
 
     return target
+
+
+# --------------------------------------------------------------------------- #
+#  API key registry (used by soc_api.py for per-user authentication)
+# --------------------------------------------------------------------------- #
+
+API_KEYS_FILE = Path(os.environ.get("SOC_API_KEYS_FILE", str(DATA_DIR / "api_keys.json")))
+VALID_API_ROLES = ("read", "write")  # "write" implies read; not an additive grant
+
+
+def load_api_keys() -> list:
+    """Load the API key registry, seeding it on first run.
+
+    Each entry is {"token": str, "user": str, "role": "read"|"write"}. This
+    replaces the single shared SOC_API_TOKEN every caller used to present as
+    themselves -- with one token per person, a compromised or ex-collaborator
+    key can be revoked individually, and the "actor" recorded against an
+    alert status change (see set_alert_status) is a real, authenticated
+    identity instead of a free-text string the client could put anything in.
+
+    On first run (file missing), this migrates SOC_API_TOKEN if it was set,
+    so the shared token already in use (e.g. by Tomás's poller on
+    10.69.0.80) keeps working with no coordinated rotation -- it just shows
+    up as user "legacy" until someone issues it a real name via
+    manage_api_keys.py. If SOC_API_TOKEN was never set either, one fresh key
+    is generated for user "default", mirroring the old behavior of always
+    guaranteeing *some* token existed.
+    """
+    if API_KEYS_FILE.exists():
+        keys = json.loads(API_KEYS_FILE.read_text()).get("keys", [])
+        for k in keys:
+            if k.get("role") not in VALID_API_ROLES:
+                raise ValueError(f"invalid role in {API_KEYS_FILE}: {k!r}")
+        return keys
+
+    legacy = os.environ.get("SOC_API_TOKEN", "").strip()
+    if legacy:
+        keys = [{"token": legacy, "user": "legacy", "role": "write"}]
+        print(f"[*] Migrated existing SOC_API_TOKEN into {API_KEYS_FILE} as user 'legacy'.")
+        print("[*] Issue named keys going forward: python3 manage_api_keys.py add <user> <read|write>")
+    else:
+        token = secrets.token_urlsafe(24)
+        keys = [{"token": token, "user": "default", "role": "write"}]
+        print("=" * 66)
+        print(" No API keys configured -- generated one for user 'default':")
+        print(f"   {token}")
+        print("=" * 66)
+    save_api_keys(keys)
+    return keys
+
+
+def save_api_keys(keys: list) -> None:
+    API_KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(API_KEYS_FILE.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump({"keys": keys}, f, indent=2)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, API_KEYS_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 
 def group_by_host(alerts: list) -> list:

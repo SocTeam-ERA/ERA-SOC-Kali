@@ -7,6 +7,11 @@ narrow -- it can only change an alert's triage status (open /
 acknowledged / resolved), nothing else about the alert. This is this
 project's own local API, unrelated to the separate backend Sentinel SOC
 optionally forwards alerts to (SOC_INGEST_URL in soc_core.py).
+
+Auth is per-user API keys (see soc_core.load_api_keys / manage_api_keys.py),
+not a single shared token: every key has a "role" of "read" (GET only) or
+"write" (GET + the status endpoint), and every write is attributed to the
+key's user, not a client-supplied field.
 """
 from __future__ import annotations
 import json, os, secrets
@@ -17,17 +22,10 @@ import soc_core
  
 HOST = os.environ.get("SOC_API_HOST", "0.0.0.0")
 PORT = int(os.environ.get("SOC_API_PORT", "8080"))
-TOKEN = os.environ.get("SOC_API_TOKEN", "").strip()
 CORS = os.environ.get("SOC_API_CORS", "").strip()
- 
-if not TOKEN:
-    TOKEN = secrets.token_urlsafe(24)
-    print("=" * 66)
-    print(" SOC_API_TOKEN was not set — generated a temporary one for this run:")
-    print(f"   {TOKEN}")
-    print(f'   export SOC_API_TOKEN="{TOKEN}"   # set it permanently')
-    print("=" * 66)
- 
+
+API_KEYS = {k["token"]: k for k in soc_core.load_api_keys()}
+
 def _to_epoch(v):
     if v is None: return None
     s = str(v).strip()
@@ -73,8 +71,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", CORS)
             self.send_header("Access-Control-Allow-Headers", "Authorization")
         self.end_headers(); self.wfile.write(body)
-    def _authed(self):
-        return secrets.compare_digest(self.headers.get("Authorization", ""), f"Bearer {TOKEN}")
+    def _authenticate(self):
+        """Return the matched API key entry ({token, user, role}), or None."""
+        auth = self.headers.get("Authorization", "")
+        if not auth.startswith("Bearer "):
+            return None
+        supplied = auth[len("Bearer "):]
+        for key in API_KEYS.values():
+            if secrets.compare_digest(supplied, key["token"]):
+                return key
+        return None
     def log_message(self, fmt, *args):
         print(f"{self.address_string()} - {fmt % args}")
     def do_OPTIONS(self):
@@ -91,7 +97,8 @@ class Handler(BaseHTTPRequestHandler):
             snap = soc_core._load_snapshot()
             return self._send(200, {"status": "ok", "alerts": len(snap),
                                     "time": datetime.now(timezone.utc).isoformat()})
-        if not self._authed():
+        key = self._authenticate()
+        if not key:
             return self._send(401, {"error": "unauthorized",
                                     "hint": "send header: Authorization: Bearer <token>"})
         if path == "/api/summary":
@@ -116,9 +123,13 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found", "path": path})
     def do_POST(self):
         parsed = urlparse(self.path); path = parsed.path.rstrip("/") or "/"
-        if not self._authed():
+        key = self._authenticate()
+        if not key:
             return self._send(401, {"error": "unauthorized",
                                     "hint": "send header: Authorization: Bearer <token>"})
+        if key["role"] != "write":
+            return self._send(403, {"error": "forbidden",
+                                    "hint": f"key for {key['user']!r} is read-only"})
         # only route: /api/alerts/<id>/status
         parts = path.split("/")
         if len(parts) == 5 and parts[1] == "api" and parts[2] == "alerts" and parts[4] == "status":
@@ -130,12 +141,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(400, {"error": "invalid JSON body"})
             status = str(body.get("status", "")).strip()
             note = str(body.get("note", "")).strip()
-            actor = str(body.get("actor", "")).strip()
+            # actor is the authenticated key's user, never client-supplied --
+            # a body field would let any caller claim to be anyone.
             try:
-                updated = soc_core.set_alert_status(aid, status, note=note, actor=actor)
+                updated = soc_core.set_alert_status(aid, status, note=note, actor=key["user"])
             except ValueError as e:
                 code = 404 if "not found" in str(e) else 400
                 return self._send(code, {"error": str(e)})
+            print(f"[*] {key['user']} set alert {aid} -> {status}")
             return self._send(200, updated)
         return self._send(404, {"error": "not found", "path": path})
 
@@ -143,7 +156,10 @@ def main():
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"[*] Sentinel SOC API listening on http://{HOST}:{PORT}")
     print(f"[*] Serving alerts from: {soc_core.ALERTS_SNAPSHOT}")
-    print(f"[*] Auth: Authorization: Bearer <token>   (CORS: {CORS or 'off'})")
+    n_write = sum(1 for k in API_KEYS.values() if k["role"] == "write")
+    print(f"[*] Auth: Authorization: Bearer <token>   "
+          f"({len(API_KEYS)} key(s): {n_write} write, {len(API_KEYS) - n_write} read-only)   "
+          f"(CORS: {CORS or 'off'})")
     print("[*] Endpoints: /api/health  /api/summary  /api/alerts  /api/alerts/<id>  /api/hosts")
     print("[*] Write:     POST /api/alerts/<id>/status  {\"status\": \"open|acknowledged|resolved\", \"note\": \"...\"}")
     try:

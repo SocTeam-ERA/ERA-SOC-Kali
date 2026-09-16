@@ -329,6 +329,21 @@ td.time .ago{color:var(--muted);font-size:10px;display:block}
     </div>
   </section>
 
+  <section class="panel">
+    <div class="panel-h"><span class="accent-tick"></span><h2>Asset Inventory</h2>
+      <span class="meta" id="assets-meta">devices with a stable vendor MAC · randomized Wi-Fi MACs excluded by design</span></div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th style="width:150px">MAC</th><th>Vendor</th><th style="width:150px">VLAN</th>
+          <th style="width:130px">IP</th><th style="width:120px">First Seen</th>
+          <th style="width:120px">Last Seen</th><th style="width:110px">Owner</th>
+        </tr></thead>
+        <tbody id="assets-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
   <div class="foot-note">
     <b>PROTOTYPE</b> · sample data generated in-browser for demonstration ·
     in production this feed reads <b>data/alerts.json</b> written by the Python detectors &amp; the Kali scan suite<br>
@@ -766,6 +781,49 @@ document.getElementById('livebtn').addEventListener('click',()=>{
 /* keep "x ago" fresh */
 setInterval(()=>{if(!state.q&&!document.getElementById('drawer').classList.contains('show'))renderTable();},15000);
 
+/* =============================================================
+ *  ASSET INVENTORY — reads data/assets.json (written by
+ *  kali/arp_to_alerts.py). Independent of the alert feed's
+ *  live/demo mode: no demo data here, it's fine for this panel to
+ *  simply show nothing until the file is actually being served.
+ * ============================================================= */
+const ASSET_URLS=['data/assets.json','../data/assets.json'];
+function escHtml(s){
+  return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+async function loadAssets(){
+  for(const u of ASSET_URLS){
+    try{
+      const r=await fetch(u,{cache:'no-store'});
+      if(!r.ok) continue;
+      const raw=await r.json();
+      const assets=Object.values(raw.assets||{});
+      assets.sort((a,b)=>Date.parse(b.last_seen||0)-Date.parse(a.last_seen||0));
+      return assets;
+    }catch(e){/* file:// or not served — ignore and try next */}
+  }
+  return null;
+}
+function renderAssets(assets){
+  const meta=document.getElementById('assets-meta');
+  if(!assets){
+    meta.textContent='data/assets.json not reachable — served from file:// or not yet generated';
+    return;
+  }
+  meta.textContent=`${assets.length} device(s) with a stable vendor MAC · randomized Wi-Fi MACs excluded by design`;
+  document.getElementById('assets-tbody').innerHTML = assets.map(a=>`
+    <tr>
+      <td><span class="mono-cell">${escHtml(a.mac)}</span></td>
+      <td>${escHtml(a.vendor||'—')}</td>
+      <td>${escHtml(a.cidr||'—')}</td>
+      <td><span class="mono-cell ip">${escHtml(a.ip||'—')}</span></td>
+      <td>${a.first_seen?ago(Date.parse(a.first_seen)):'—'}</td>
+      <td>${a.last_seen?ago(Date.parse(a.last_seen)):'—'}</td>
+      <td>${escHtml(a.owner||'—')}</td>
+    </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;opacity:.6">no assets recorded yet</td></tr>';
+}
+async function pollAssets(){ renderAssets(await loadAssets()); }
+
 /* ---- init ---- */
 (async function init(){
   const ext=await loadExternal();
@@ -774,5 +832,7 @@ setInterval(()=>{if(!state.q&&!document.getElementById('drawer').classList.conta
   setFeedStat();
   renderAll();
   if(!window.matchMedia('(prefers-reduced-motion: reduce)').matches)scheduleLive();
+  pollAssets();
+  setInterval(pollAssets,60000);
 })();
 </script>

@@ -734,6 +734,116 @@ def save_api_keys(keys: list) -> None:
             os.remove(tmp)
 
 
+# --------------------------------------------------------------------------- #
+#  Asset inventory (devices with a stable, vendor-assigned MAC)
+# --------------------------------------------------------------------------- #
+#  Deliberately does NOT try to track devices with a locally-administered
+#  (randomized) MAC -- see arp_to_alerts.py's _is_locally_administered. A
+#  modern phone/laptop generates a brand new, unlinkable random MAC on every
+#  Wi-Fi reconnect specifically so it can't be tracked; correlating those
+#  sightings back into "the same device" would mean defeating that privacy
+#  feature on purpose (e.g. by hostname/DHCP fingerprinting), which is out
+#  of scope here. Those sightings stay exactly what they already were --
+#  lowered-severity "new device" alerts -- and never get an entry below.
+
+ASSETS_FILE = DATA_DIR / "assets.json"
+ASSET_ANNOTATION_LOG = DATA_DIR / "asset_annotation_log.jsonl"
+
+
+def load_assets() -> Dict[str, Dict[str, Any]]:
+    """Load the persistent asset inventory, keyed by MAC address."""
+    try:
+        return json.loads(ASSETS_FILE.read_text()).get("assets", {})
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_assets(assets: Dict[str, Dict[str, Any]]) -> None:
+    ASSETS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(ASSETS_FILE.parent), suffix=".tmp")
+    os.chmod(tmp, 0o664)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump({"generated": datetime.now(timezone.utc).isoformat(),
+                       "assets": assets}, f, indent=2, sort_keys=True)
+        os.replace(tmp, ASSETS_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def record_asset_sightings(sightings: list) -> int:
+    """Batch-record sightings of vendor-MAC devices: create an entry the
+    first time a MAC is seen, refresh ip/last_seen/seen_count every time
+    after. One lock/load/save cycle for the whole batch (not one per MAC --
+    a single arp_to_alerts.py run can see hundreds of devices at once),
+    mirroring the pattern diff_state_lock() already uses for mac_state.json.
+
+    Each sighting is {"mac", "ip", "vendor", "cidr", "iface"}. Caller is
+    responsible for never passing a locally-administered MAC (see module
+    docstring above).
+
+    Manual annotations (owner/notes/authorized) are never touched here --
+    only set_asset_annotation() below writes them, so a scheduled scan can
+    never silently overwrite what a human typed in. Returns how many assets
+    were newly created (vs. just refreshed).
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    created = 0
+    with diff_state_lock(ASSETS_FILE):
+        assets = load_assets()
+        for s in sightings:
+            mac = s["mac"]
+            rec = assets.get(mac)
+            if rec is None:
+                rec = {"mac": mac, "vendor": s.get("vendor", ""),
+                       "cidr": s["cidr"], "iface": s.get("iface", ""),
+                       "ip": s.get("ip", ""), "first_seen": now, "last_seen": now,
+                       "seen_count": 1, "owner": None, "notes": None, "authorized": None}
+                created += 1
+            else:
+                rec["ip"] = s.get("ip") or rec.get("ip", "")
+                rec["vendor"] = s.get("vendor") or rec.get("vendor", "")
+                rec["cidr"] = s.get("cidr", rec.get("cidr", ""))
+                rec["iface"] = s.get("iface") or rec.get("iface", "")
+                rec["last_seen"] = now
+                rec["seen_count"] = rec.get("seen_count", 0) + 1
+            assets[mac] = rec
+        _save_assets(assets)
+    return created
+
+
+def set_asset_annotation(mac: str, *, owner: Optional[str] = None,
+                          notes: Optional[str] = None,
+                          authorized: Optional[bool] = None,
+                          actor: str = "") -> Dict[str, Any]:
+    """Let a human label a known asset (owner, free-text notes, authorized
+    yes/no) -- kept separate from record_asset_sightings() so a scan re-run
+    can never clobber what a person typed in. Only fields explicitly passed
+    (not None) are changed. Raises ValueError if the MAC has no asset record
+    yet (it must have been seen by a scan first)."""
+    now = datetime.now(timezone.utc).isoformat()
+    with diff_state_lock(ASSETS_FILE):
+        assets = load_assets()
+        rec = assets.get(mac)
+        if rec is None:
+            raise ValueError(f"asset not found: {mac}")
+        changed: Dict[str, Any] = {}
+        if owner is not None:
+            rec["owner"] = owner; changed["owner"] = owner
+        if notes is not None:
+            rec["notes"] = notes; changed["notes"] = notes
+        if authorized is not None:
+            rec["authorized"] = authorized; changed["authorized"] = authorized
+        assets[mac] = rec
+        _save_assets(assets)
+
+    with ASSET_ANNOTATION_LOG.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"mac": mac, "changed": changed, "actor": actor,
+                              "timestamp": now}) + "\n")
+    return rec
+
+
 def group_by_host(alerts: list) -> list:
     """Aggregate a list of alert records by source_ip -- one summary entry
     per host instead of one row per finding, so a host with 5 issues can be

@@ -35,7 +35,7 @@ from pathlib import Path
 
 SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
-from soc_core import Alert, emit_alert, diff_state_lock  # noqa: E402
+from soc_core import Alert, emit_alert, diff_state_lock, record_asset_sightings  # noqa: E402
 
 DATA_DIR = Path(os.environ.get("SOC_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 DEFAULT_STATE = DATA_DIR / "mac_state.json"
@@ -115,6 +115,7 @@ def parse_assets(path: Path) -> dict:
 def run(assets_path: Path, state_path: Path) -> int:
     current = parse_assets(assets_path)
     n = 0
+    sightings = []  # vendor-MAC devices only -- see record_asset_sightings()
 
     # Locked so a manual run can't race the scheduled job (or another
     # manual run) on the same state file -- see diff_state_lock()'s
@@ -130,6 +131,17 @@ def run(assets_path: Path, state_path: Path) -> int:
                       f"— defaulting to 'medium'. Update arp_to_alerts.py to match targets.conf.",
                       file=sys.stderr)
             severity = VLAN_SEVERITY.get(cidr, "medium")
+
+            # Asset inventory: every device with a real vendor MAC on this
+            # VLAN, new or already known -- refreshes ip/last_seen either
+            # way. Randomized MACs are never durable identity, so they're
+            # excluded here (they still get their own "new device" alert
+            # below, just no persistent asset record).
+            for mac, info in macs.items():
+                if not _is_locally_administered(mac):
+                    sightings.append({"mac": mac, "ip": info["ip"], "vendor": info["vendor"],
+                                       "cidr": cidr, "iface": info["iface"]})
+
             prev_macs = previous.get(cidr)
 
             if prev_macs is None:
@@ -180,6 +192,10 @@ def run(assets_path: Path, state_path: Path) -> int:
         for cidr, macs in current.items():
             merged[cidr] = {**merged.get(cidr, {}), **macs}
         _save_state(state_path, merged)
+
+    if sightings:
+        created = record_asset_sightings(sightings)
+        print(f"[*] arp_to_alerts: asset inventory updated ({len(sightings)} sighting(s), {created} new).")
 
     print(f"[*] arp_to_alerts: {n} alert(s) raised.")
     return 0

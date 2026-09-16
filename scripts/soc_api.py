@@ -2,11 +2,15 @@
 """Sentinel SOC — REST API exposing scan results/alerts as JSON.
 
 Mostly read-only: every GET endpoint just reads the current snapshot.
-The one write endpoint (POST /api/alerts/<id>/status) is deliberately
-narrow -- it can only change an alert's triage status (open /
-acknowledged / resolved), nothing else about the alert. This is this
-project's own local API, unrelated to the separate backend Sentinel SOC
-optionally forwards alerts to (SOC_INGEST_URL in soc_core.py).
+The two write endpoints are deliberately narrow:
+  - POST /api/alerts/<id>/status can only change an alert's triage status
+    (open / acknowledged / resolved), nothing else about the alert.
+  - POST /api/assets/<mac>/notes can only set owner/notes/authorized on an
+    already-seen asset (see soc_core.set_asset_annotation) -- it can't
+    create an asset or touch anything a scan itself writes (ip, vendor,
+    last_seen, ...).
+This is this project's own local API, unrelated to the separate backend
+Sentinel SOC optionally forwards alerts to (SOC_INGEST_URL in soc_core.py).
 
 Auth is per-user API keys (see soc_core.load_api_keys / manage_api_keys.py),
 not a single shared token: every key has a "role" of "read" (GET only) or
@@ -115,6 +119,13 @@ class Handler(BaseHTTPRequestHandler):
             filtered = _filter_alerts(soc_core._load_snapshot(), qs)
             hosts = soc_core.group_by_host(filtered)
             return self._send(200, {"count": len(hosts), "hosts": hosts})
+        if path == "/api/assets":
+            assets = list(soc_core.load_assets().values())
+            vlan = (qs.get("vlan") or [None])[0]
+            if vlan:
+                assets = [a for a in assets if a.get("cidr") == vlan]
+            assets.sort(key=lambda a: a.get("last_seen") or "", reverse=True)
+            return self._send(200, {"count": len(assets), "assets": assets})
         if path.startswith("/api/alerts/"):
             aid = path.rsplit("/", 1)[-1]
             for a in soc_core._load_snapshot():
@@ -150,6 +161,24 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(code, {"error": str(e)})
             print(f"[*] {key['user']} set alert {aid} -> {status}")
             return self._send(200, updated)
+        # /api/assets/<mac>/notes
+        if len(parts) == 5 and parts[1] == "api" and parts[2] == "assets" and parts[4] == "notes":
+            mac = parts[3]
+            try:
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                body = json.loads(self.rfile.read(length) or b"{}")
+            except (ValueError, json.JSONDecodeError):
+                return self._send(400, {"error": "invalid JSON body"})
+            owner = body.get("owner")
+            notes = body.get("notes")
+            authorized = body.get("authorized")
+            try:
+                updated = soc_core.set_asset_annotation(
+                    mac, owner=owner, notes=notes, authorized=authorized, actor=key["user"])
+            except ValueError as e:
+                return self._send(404, {"error": str(e)})
+            print(f"[*] {key['user']} annotated asset {mac}")
+            return self._send(200, updated)
         return self._send(404, {"error": "not found", "path": path})
 
 def main():
@@ -160,8 +189,9 @@ def main():
     print(f"[*] Auth: Authorization: Bearer <token>   "
           f"({len(API_KEYS)} key(s): {n_write} write, {len(API_KEYS) - n_write} read-only)   "
           f"(CORS: {CORS or 'off'})")
-    print("[*] Endpoints: /api/health  /api/summary  /api/alerts  /api/alerts/<id>  /api/hosts")
+    print("[*] Endpoints: /api/health  /api/summary  /api/alerts  /api/alerts/<id>  /api/hosts  /api/assets")
     print("[*] Write:     POST /api/alerts/<id>/status  {\"status\": \"open|acknowledged|resolved\", \"note\": \"...\"}")
+    print("[*] Write:     POST /api/assets/<mac>/notes  {\"owner\": \"...\", \"notes\": \"...\", \"authorized\": true|false}")
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

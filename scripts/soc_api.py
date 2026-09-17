@@ -27,6 +27,13 @@ import soc_core
 HOST = os.environ.get("SOC_API_HOST", "0.0.0.0")
 PORT = int(os.environ.get("SOC_API_PORT", "8080"))
 CORS = os.environ.get("SOC_API_CORS", "").strip()
+# Both POST bodies are tiny ({"status": "...", "note": "..."} / {"owner":
+# ..., "notes": ..., "authorized": ...}) -- this is generous headroom, not
+# a real limit on legitimate use. Without it, Content-Length is trusted
+# blindly and rfile.read(length) buffers however much a caller claims to
+# send, unbounded -- a write-role caller (or anyone who obtains a write
+# key) could exhaust memory with one oversized request.
+MAX_BODY_SIZE = 65536
 
 API_KEYS = {k["token"]: k for k in soc_core.load_api_keys()}
 
@@ -147,8 +154,13 @@ class Handler(BaseHTTPRequestHandler):
             aid = parts[3]
             try:
                 length = int(self.headers.get("Content-Length", "0") or "0")
+            except ValueError:
+                return self._send(400, {"error": "invalid Content-Length"})
+            if length > MAX_BODY_SIZE:
+                return self._send(413, {"error": f"body too large (max {MAX_BODY_SIZE} bytes)"})
+            try:
                 body = json.loads(self.rfile.read(length) or b"{}")
-            except (ValueError, json.JSONDecodeError):
+            except json.JSONDecodeError:
                 return self._send(400, {"error": "invalid JSON body"})
             status = str(body.get("status", "")).strip()
             note = str(body.get("note", "")).strip()
@@ -166,8 +178,13 @@ class Handler(BaseHTTPRequestHandler):
             mac = parts[3]
             try:
                 length = int(self.headers.get("Content-Length", "0") or "0")
+            except ValueError:
+                return self._send(400, {"error": "invalid Content-Length"})
+            if length > MAX_BODY_SIZE:
+                return self._send(413, {"error": f"body too large (max {MAX_BODY_SIZE} bytes)"})
+            try:
                 body = json.loads(self.rfile.read(length) or b"{}")
-            except (ValueError, json.JSONDecodeError):
+            except json.JSONDecodeError:
                 return self._send(400, {"error": "invalid JSON body"})
             owner = body.get("owner")
             notes = body.get("notes")

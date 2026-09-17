@@ -300,8 +300,12 @@ def _run_vulns(vulns: list, diff_state: Path | None) -> int:
     real finding is worth knowing about immediately, there's no such thing
     as an acceptable "baseline" vulnerability the way an already-open port
     can be normal. A finding that stops being detected gets one low-severity
-    "resolved" alert, so remediation is visible without having to keep
-    re-alerting the original problem to prove it's gone.
+    "no longer detected" alert, so remediation is visible without having to
+    keep re-alerting the original problem to prove it's gone. The title
+    deliberately avoids the word "resolved" on its own -- the host being
+    unreachable in one scan looks identical to the finding actually being
+    fixed, and a title that just says RESOLVED reads as confirmed good news
+    even though the description right below it says the opposite.
     """
     n = 0
     if diff_state is None:
@@ -327,7 +331,7 @@ def _run_vulns(vulns: list, diff_state: Path | None) -> int:
             if key not in current_by_key:
                 emit_alert(Alert(
                     type="vuln", severity="normal",
-                    title=f"RESOLVED (no longer detected): {old.get('title', key)}",
+                    title=f"No longer detected (unconfirmed): {old.get('title', key)}",
                     source_ip=old.get("source_ip"), hostname=old.get("hostname"),
                     detector="kali_scan",
                     description=("This finding was present in a previous scan and is no longer "

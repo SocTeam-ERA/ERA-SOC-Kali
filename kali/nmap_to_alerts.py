@@ -9,7 +9,10 @@ dashboard alongside the live detectors.
 Two modes:
   * default      — emit one alert per open port (full inventory each run).
   * change-only  — with --diff-state <file>, compare against the previous scan
-                   and emit alerts ONLY for ports that just OPENED or CLOSED.
+                   and emit alerts ONLY for ports that just OPENED. A port
+                   closing is logged to stdout but not alerted -- it's
+                   almost always a device going offline, not a security
+                   event, and alerting on it drowns out real detectors.
                    Unchanged ports stay quiet (kills the repetitive noise).
                    Vulnerabilities (NSE) get the same treatment via a sibling
                    state file: a finding always alerts the first time it's
@@ -244,9 +247,14 @@ def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | Non
         title = f"NEW open port {pnum}/{proto} ({sname}) on {ip}"
         desc = f"A port that was NOT open in the previous scan is now open: {pnum}/{proto} {sname} on {ip}"
     elif change == "closed":
-        sev = "normal"
-        title = f"Port {pnum}/{proto} ({sname}) CLOSED on {ip}"
-        desc = f"A port that was open in the previous scan is now closed: {pnum}/{proto} {sname} on {ip}"
+        # A port closing isn't a security event -- it's usually just a
+        # device going offline or a service restarting. Alerting on it
+        # anyway (490 of 548 alerts in the first week were exactly this)
+        # buries the handful of alerts from real detectors like Suricata,
+        # Zeek and login_monitor under router noise. Log it for
+        # troubleshooting; don't push it into the SOC feed.
+        print(f"    (closed, not alerted) {pnum}/{proto} {sname} on {ip}")
+        return
     else:
         sev = sev_for_port(pnum, in_base)
         if unconfirmed:
@@ -388,9 +396,9 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
                 closed_c += 1
 
         _save_state(diff_state, new_state)
-    n += new_c + closed_c
-    print(f"[*] Change detection: {new_c} new, {closed_c} closed port alert(s) "
-          f"+ {vuln_n} vuln alert(s). ({n} total into the SOC feed.)")
+    n += new_c
+    print(f"[*] Change detection: {new_c} new port alert(s), {closed_c} port(s) closed "
+          f"(logged, not alerted) + {vuln_n} vuln alert(s). ({n} total into the SOC feed.)")
     return 0
 
 

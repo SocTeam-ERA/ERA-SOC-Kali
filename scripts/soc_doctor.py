@@ -141,7 +141,8 @@ def check_services() -> None:
 TIMERS = ["soc-watchdog.timer", "soc-disk-check.timer", "soc-ntfy-flush.timer",
           "soc-scan.timer", "soc-archive-alerts.timer",
           "soc-suricata-ruleset-update.timer", "soc-aide-check.timer",
-          "soc-cleanup-results.timer", "soc-tor-refresh.timer", "soc-check-updates.timer"]
+          "soc-cleanup-results.timer", "soc-tor-refresh.timer", "soc-check-updates.timer",
+          "soc-chkrootkit-forwarder.timer", "soc-vuln-scan.timer"]
 
 
 def check_timers() -> None:

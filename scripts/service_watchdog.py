@@ -41,6 +41,7 @@ SERVICES = [
     "soc-traffic-monitor",
     "soc-zeek-forwarder",
     "soc-zeek-boot",
+    "soc-dhcp-fingerprint",
     "osqueryd",
     "suricata",
 ]

@@ -1,0 +1,35 @@
+# suricata_local.rules -- Sentinel SOC custom volumetric DDoS detection.
+#
+# This is a config file, not code Suricata reads from here -- it has to be
+# installed and wired in by hand on each box that needs it (no systemd
+# unit auto-deploys it, the same way this project's other systemd
+# services aren't versioned in this repo either). Confirmed working
+# 2026-09-17 with a live SYN flood test against this network's gateway.
+#
+#   sudo cp kali/suricata_local.rules /etc/suricata/rules/local.rules
+#   sudo sed -i '/^rule-files:/a\  - /etc/suricata/rules/local.rules' /etc/suricata/suricata.yaml
+#   sudo suricata -T -c /etc/suricata/suricata.yaml -v   # validate before reloading
+#   sudo suricatasc -c reload-rules                      # hot-reload, no restart needed
+#
+# Signature-based rules (the ET Open ruleset) can't catch a DDoS: there's
+# no "bad pattern" in a flood packet's content, the badness is in the
+# RATE. Suricata's own `threshold` keyword does that rate-counting
+# natively (far more reliable/efficient than reimplementing packet
+# counting in Python) -- these fire as ordinary eve.json "alert" events,
+# so they flow through the existing suricata_to_alerts.py pipeline with
+# zero new ingestion code. classtype:attempted-dos -> Suricata severity 2
+# -> "medium" in the dashboard (see classification.config).
+#
+# SIDs 1000000-1999999 are the reserved range for local/custom rules
+# (never used by the Emerging Threats Open ruleset), so suricata-update
+# can never collide with or overwrite these.
+
+# Any single destination inside our own networks getting hit with 200+
+# SYNs in 10s, regardless of how many sources -- classic inbound
+# SYN-flood-style DDoS pattern against one of our own hosts.
+alert tcp any any -> $HOME_NET any (msg:"LOCAL DDoS SYN flood towards internal host"; flags:S; threshold: type threshold, track by_dst, count 200, seconds 10; classtype:attempted-dos; sid:1000001; rev:1;)
+
+# Any single host inside our own networks sending 300+ SYNs to outside
+# destinations in 10s -- one of our own machines behaving like a botnet
+# member flooding an external target.
+alert tcp $HOME_NET any -> any any (msg:"LOCAL possible outbound DDoS/botnet participation -- high SYN rate from internal host"; flags:S; threshold: type threshold, track by_src, count 300, seconds 10; classtype:attempted-dos; sid:1000002; rev:1;)

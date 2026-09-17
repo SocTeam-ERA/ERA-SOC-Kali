@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse, random
 from datetime import datetime, timezone, timedelta
 import soc_core
-from soc_core import Alert, ALERTS_SNAPSHOT, ALERTS_LOG, DATA_DIR
+from soc_core import Alert, ALERTS_SNAPSHOT, ALERTS_LOG, DATA_DIR, confirm_demo_on_live_instance
 import json
 
 INTERNAL = ["10.10.5.20", "10.10.5.31", "10.10.2.14", "10.10.2.15", "10.10.9.4",
@@ -75,30 +75,6 @@ def make(now, i):
     return a
 
 
-def confirm_live_wiring() -> None:
-    """This tool predates the project's real integrations -- back when
-    nothing downstream of emit_alert() was actually connected, seeding
-    fake data was harmless. Now NTFY_TOPIC pushes real phone notifications
-    for every critical-severity alert, and SOC_INGEST_URL (when Tomas's
-    backend is configured) forwards every alert straight into the real
-    dashboard. Confirm before mixing synthetic data into a live pipeline."""
-    live_bits = []
-    if soc_core.NTFY_TOPIC:
-        live_bits.append("NTFY_TOPIC is set -- fake critical alerts will push real phone notifications")
-    if soc_core.INGEST_URL:
-        live_bits.append("SOC_INGEST_URL is set -- fake alerts will forward to the real backend/dashboard")
-    if not live_bits:
-        return
-    print("[!] This looks like a LIVE, wired instance, not a throwaway demo one:")
-    for b in live_bits:
-        print(f"      - {b}")
-    print("[!] Demo/synthetic alerts are about to be mixed into real production data.")
-    ans = input("Type 'yes' to confirm you really want this: ")
-    if ans != "yes":
-        print("[x] Not confirmed. Aborting.")
-        raise SystemExit(2)
-
-
 def confirm_fresh() -> None:
     """--fresh permanently deletes the current alert history -- make sure
     that's really what's wanted before wiping real data by accident."""
@@ -120,7 +96,7 @@ def main():
     ap.add_argument("--count", type=int, default=42)
     ap.add_argument("--fresh", action="store_true", help="Clear existing alerts first")
     args = ap.parse_args()
-    confirm_live_wiring()
+    confirm_demo_on_live_instance()
     if args.fresh:
         confirm_fresh()
         ALERTS_SNAPSHOT.unlink(missing_ok=True)

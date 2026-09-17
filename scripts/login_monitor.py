@@ -42,7 +42,7 @@ import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 
-from soc_core import Alert, emit_alert, resolve_hostname, tail_follow
+from soc_core import Alert, emit_alert, resolve_hostname, tail_follow, confirm_demo_on_live_instance
 
 # --- SSH auth.log patterns ------------------------------------------------- #
 RE_FAILED = re.compile(
@@ -229,6 +229,7 @@ def process_windows_csv(path: str, tracker, known):
 
 def run_demo(tracker, known):
     """Replay a realistic sequence so you can see alerts without real logs."""
+    confirm_demo_on_live_instance()
     print("[*] Demo mode: replaying a synthetic attack sequence...", file=sys.stderr)
     attacker = "203.0.113.77"
     for _ in range(6):                       # brute force burst

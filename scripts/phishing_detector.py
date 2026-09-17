@@ -37,7 +37,7 @@ from email.parser import BytesParser
 from email.utils import parseaddr, getaddresses
 from pathlib import Path
 
-from soc_core import Alert, emit_alert
+from soc_core import Alert, emit_alert, confirm_demo_on_live_instance
 
 DANGEROUS_EXT = {
     ".exe", ".scr", ".pif", ".com", ".bat", ".cmd", ".js", ".jse", ".vbs",
@@ -260,6 +260,7 @@ confirm your password immediately or your account will be suspended.</p>
 
 
 def run_demo() -> None:
+    confirm_demo_on_live_instance()
     print("[*] Demo mode: analysing a bundled sample phishing email...", file=sys.stderr)
     msg = email.message_from_string(DEMO_EML, policy=policy.default)
     score, reasons, details = analyse(msg)

@@ -510,6 +510,38 @@ def replay_outbox() -> Dict[str, int]:
     return {"sent": sent, "kept": len(still_failed)}
 
 
+def confirm_demo_on_live_instance() -> None:
+    """Guard for any script's --demo/self-test mode: demo alerts go through
+    the exact same emit_alert() as real ones (same schema, same files), so
+    they are indistinguishable from a real detection once written -- see
+    2026-09-17's incident, where a synthetic "root login from a Tor exit
+    node" produced by a --demo run sat in the live dashboard feed looking
+    exactly like an active compromise. Call this at the top of any --demo
+    path, before emitting a single alert.
+
+    NTFY_TOPIC and INGEST_URL are the two ways an alert leaves this local
+    snapshot and reaches an actual human or another system: a real phone
+    push, or a forward into the real backend/dashboard. Neither being
+    configured means synthetic data is still harmless. Either one being
+    configured means this looks like a live, wired instance -- ask first.
+    """
+    live_bits = []
+    if NTFY_TOPIC:
+        live_bits.append("NTFY_TOPIC is set -- fake critical alerts will push real phone notifications")
+    if INGEST_URL:
+        live_bits.append("SOC_INGEST_URL is set -- fake alerts will forward to the real backend/dashboard")
+    if not live_bits:
+        return
+    print("[!] This looks like a LIVE, wired instance, not a throwaway demo one:")
+    for b in live_bits:
+        print(f"      - {b}")
+    print("[!] Demo/synthetic alerts are about to be mixed into real production data.")
+    ans = input("Type 'yes' to confirm you really want this: ")
+    if ans != "yes":
+        print("[x] Not confirmed. Aborting.")
+        raise SystemExit(2)
+
+
 def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
     """
     Persist an alert to the append-only log and the rolling snapshot.

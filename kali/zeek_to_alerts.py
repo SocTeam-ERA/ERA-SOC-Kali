@@ -41,9 +41,20 @@ DEFAULT_LOG = Path("/opt/zeek/logs/current/notice.log")
 # event. Confirmed empirically: CaptureLoss::Too_Little_Traffic fired
 # repeatedly within minutes of first standing up this cluster, for every
 # low-traffic VLAN worker (Printers, Guest WiFi, Office).
+#
+# CaptureLoss::Too_Much_Loss belongs here for the exact same reason -- it's
+# Zeek reporting it can't keep up with a busy interface, not an attacker on
+# the wire -- but was missing from this set. Confirmed 2026-09-17:
+# worker-floor (eth0, the busiest VLAN) hit ~100% estimated loss every
+# ~15min (Zeek's CaptureLossPeriod) and it alerted as a medium-severity
+# "intrusion", indistinguishable from a real detection. Root cause (a
+# single worker process undersized for that VLAN's traffic) fixed
+# separately in /opt/zeek/etc/node.cfg (lb_procs). If this comes back, it
+# should surface as a Zeek/zeekctl health problem, not a dashboard alert.
 NOISE_NOTICE_TYPES = {
     "CaptureLoss::Too_Little_Traffic",
     "CaptureLoss::Dropped_Packets",
+    "CaptureLoss::Too_Much_Loss",
 }
 
 # Rough notice-type -> our alert type, by prefix/keyword. Falls back to

@@ -130,3 +130,31 @@ Estructura sugerida: *"Desde un puerto en la VLAN X se alcanza A, B y C — incl
 - El código del backend/frontend → es de Sixto y Tomás; tú les das el contenido de seguridad y el QA.
 
 > Recordatorio final: todo escaneo y captura, **solo** sobre lo autorizado por escrito, en la ventana acordada, con IT avisado. Tu valor en la Etapa 1 es el **mapa de segmentación** — ese es el hallazgo que justifica todo lo demás.
+
+---
+
+## 7. Etapa 2 — plan para después de la certificación (agregado 2026-09-17)
+
+**No empieza antes de que Fase 1 esté cerrada y se pase la certificación del 29 de octubre de 2026.** Arranca aproximadamente en noviembre 2026. Hasta entonces, nada de lo de esta sección se toca — ni herramientas, ni scripts, ni reconocimiento activo contra el dominio. (Confirmado 2026-09-17: se llegó a construir y correr una vez un script de enumeración de usuarios de AD por adelantado —ya se borró por completo— antes de confirmar que Fase 2 todavía no arranca. No repetir ese error: verificar la fecha/fase antes de tocar cualquier herramienta de esta lista.)
+
+**Objetivo:** seguir mejorando la seguridad de la empresa con pruebas ofensivas reales — actuando tanto de SOC analyst (defensa/detección) como de pentester (ataque), sobre el mismo entorno que ya está bajo Sentinel SOC.
+
+**Herramientas de software (autorización ya existe para esto, según lo confirmado por el usuario):**
+- Metasploit Framework — explotación de vulnerabilidades ya identificadas en los scans de Fase 1.
+- `searchsploit` — cruzar CVEs ya detectados con exploits conocidos.
+- Hydra / Medusa — fuerza bruta de credenciales contra servicios (con cuidado de umbrales de bloqueo de cuentas).
+- CrackMapExec / NetExec — enumeración y movimiento lateral en el dominio (ya hay un Domain Controller identificado en `10.201.5.155`).
+- Responder — captura/envenenamiento LLMNR/NBT-NS.
+- BloodHound — mapeo de rutas de ataque dentro de Active Directory.
+- John the Ripper / hashcat — cracking offline de hashes (Kerberoasting / AS-REP roasting contra el DC).
+- GoPhish — campañas de simulación de phishing contra empleados reales (distinto de `phishing_detector.py`, que solo detecta phishing entrante).
+
+**Hardware Hak5 / RF (mencionado por el usuario 2026-09-17):**
+- Flipper Zero.
+- WiFi Pineapple Mark VII.
+- WiFi Pineapple Pager.
+(Esto amplía el punto ya anotado en la sección 1.7 de "adaptador WiFi en modo monitor para auditoría WiFi".)
+
+**Cadencia:** una vez arrancada Etapa 2, la idea es correr este tipo de pruebas **mensualmente**, como programa continuo de mejora — no una sola vez. Ejecución **supervisada** (alguien presente mientras corre), no automatizada por completo vía timer, dado el riesgo de bloqueos de cuentas / impacto en la red de herramientas como Responder/Hydra.
+
+**Antes de tocar cualquiera de estas herramientas hace falta (igual que en Etapa 1, sección 1):** una autorización por escrito específica de Etapa 2 (alcance, ventana horaria, métodos, contacto de emergencia de IT) — el usuario confirmó 2026-09-17 que esta autorización ya existe, pero falta confirmar el detalle (fechas exactas, alcance por escrito) cuando se retome esto en noviembre.

@@ -172,6 +172,14 @@ def parse(stream, ioc_ips: set, bad_domains: set, pcap_path: str | None = None,
     for src, ports in dst_ports.items():
         if src in gateway_ips:
             continue  # a router legitimately touches many ports relaying traffic -- see known_gateway_ips()
+        try:
+            if ipaddress.ip_address(src).is_loopback:
+                continue  # 127.0.0.0/8 / ::1 traffic never leaves this host, so it can't be
+                          # "on the wire" -- confirmed: this box's own desktop session and local
+                          # tooling routinely touch dozens of distinct localhost ports (e.g. adb
+                          # on 5037 plus a spread of ephemeral ports), which isn't scan behavior.
+        except ValueError:
+            pass
         if len(ports) >= PORT_SCAN_THRESHOLD or syn_only.get(src, 0) >= SYN_ONLY_THRESHOLD:
             sev = "critical" if len(ports) >= PORT_SCAN_THRESHOLD * 2 else "medium"
             _emit(Alert(
@@ -189,6 +197,14 @@ def parse(stream, ioc_ips: set, bad_domains: set, pcap_path: str | None = None,
         if cleartext_hits[key] < 2:
             continue
         src, dst, port = key
+        try:
+            if ipaddress.ip_address(src).is_loopback or ipaddress.ip_address(dst).is_loopback:
+                continue  # same reasoning as the port-scan loopback skip above: 127.0.0.0/8
+                          # traffic never leaves this host, so it isn't "on the wire" cleartext
+                          # exposure -- confirmed: this box's own local tooling talking to a
+                          # service on 127.0.0.1 was showing up as a fake cleartext-protocol alert.
+        except ValueError:
+            pass
         _emit(Alert(
             type="intrusion", severity="medium",
             title=f"Cleartext protocol {svc} ({port}/{l4proto}): {src} → {dst}",

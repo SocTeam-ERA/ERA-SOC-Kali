@@ -366,11 +366,10 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
     # run) on the same state file -- see diff_state_lock()'s docstring.
     with diff_state_lock(diff_state):
         previous = _load_state(diff_state)
-        # save the new state (as ip -> {portkey: service}) regardless of what we emit
-        new_state = {ip: {k: v["service"] for k, v in ports.items()} for ip, ports in current.items()}
 
         if not previous:
             # first run: seed the baseline quietly, one summary alert (no flood)
+            new_state = {ip: {k: v["service"] for k, v in ports.items()} for ip, ports in current.items()}
             host_count = len(current)
             port_count = sum(len(p) for p in current.values())
             emit_alert(Alert(
@@ -386,18 +385,31 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
                   f"Emitted 1 summary + {n} vuln alert(s).")
             return 0
 
+        # Merge into the previous state rather than replacing it wholesale --
+        # confirmed 2026-09-17: a host that simply didn't respond to THIS
+        # scan pass (asleep laptop, printer powered off, a brief network
+        # hiccup -- routine on a network of hundreds of real hosts) was
+        # falling out of `current` entirely, which wiped its whole tracked
+        # port history. The next time that same host showed up with the
+        # exact same ports it always has, every one of them looked "new"
+        # again -- one host alone (10.201.4.37) got re-flagged "new" 13
+        # times over a week this way. Only hosts nmap actually saw this
+        # run get their entry touched; anything absent from `current`
+        # keeps whatever state it already had, so a transient miss no
+        # longer costs that host its history.
+        new_state = dict(previous)
         new_c = closed_c = 0
-        for ip in set(current) | set(previous):
-            cur_ports = current.get(ip, {})
+        for ip, ports in current.items():
             prev_ports = previous.get(ip, {})
-            for key in set(cur_ports) - set(prev_ports):          # newly opened
-                emit_port(cur_ports[key], ip, hostnames.get(ip), baseline, change="new")
+            for key in set(ports) - set(prev_ports):              # newly opened
+                emit_port(ports[key], ip, hostnames.get(ip), baseline, change="new")
                 new_c += 1
-            for key in set(prev_ports) - set(cur_ports):          # newly closed
+            for key in set(prev_ports) - set(ports):               # newly closed
                 proto, _, pnum = key.partition("/")
                 info = {"port": int(pnum), "proto": proto, "service": prev_ports[key], "banner": ""}
                 emit_port(info, ip, hostnames.get(ip), baseline, change="closed")
                 closed_c += 1
+            new_state[ip] = {k: v["service"] for k, v in ports.items()}
 
         _save_state(diff_state, new_state)
     n += new_c

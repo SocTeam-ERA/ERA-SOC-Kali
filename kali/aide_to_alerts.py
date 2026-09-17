@@ -92,6 +92,32 @@ def parse_report(text: str) -> list[tuple[str, str]]:
     return out
 
 
+def refresh_baseline() -> None:
+    """Accept the current filesystem state as the new baseline, so tomorrow's
+    --check only reports changes since TODAY, not since the database was
+    last (re)built. Without this, aide --check compares against the same
+    fixed snapshot forever and every legitimate change (an apt upgrade, a
+    Suricata ruleset auto-update, ...) gets re-reported on every single
+    future run -- confirmed empirically: the database was never refreshed
+    since this project's initial setup, and alerts piled up into the tens
+    of thousands as a result, almost all re-reports of already-seen,
+    already-alerted changes rather than new findings."""
+    proc = subprocess.run(
+        ["aide", f"--config={AIDE_CONFIG}", "--update"],
+        capture_output=True, text=True,
+    )
+    new_db = Path("/var/lib/aide/aide.db.new")
+    db = Path("/var/lib/aide/aide.db")
+    if new_db.exists():
+        os.replace(new_db, db)
+    elif proc.returncode not in (0, 1):
+        # 0 = no diffs, 1 = diffs found (both produce aide.db.new); anything
+        # else is a real failure -- surface it instead of silently leaving
+        # the stale baseline in place.
+        print(f"[!] aide --update failed (rc={proc.returncode}), baseline NOT refreshed:\n{proc.stderr}",
+              file=sys.stderr)
+
+
 def run() -> int:
     proc = subprocess.run(
         ["aide", f"--config={AIDE_CONFIG}", "--check"],
@@ -122,6 +148,7 @@ def run() -> int:
           f"{sum(1 for k, _ in entries if k == 'changed')} changed).")
     if proc.stderr.strip():
         print(f"[!] aide stderr (not fatal, informational):\n{proc.stderr}", file=sys.stderr)
+    refresh_baseline()
     return 0
 
 

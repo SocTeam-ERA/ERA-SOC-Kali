@@ -66,5 +66,5 @@ No es de este proyecto de código, pero queda documentado: hoy se cayó varias v
 - [ ] `phishing_detector.py`: no hay fuente de correo todavía — esperando a IT.
 
 **Housekeeping menor, sin acción tomada:**
-- [ ] Hay una API key real en texto plano en `~/.bash_history` (`Authorization: Bearer [old key removed]`) — vale la pena rotarla en algún momento.
+- [x] **Resuelto 2026-09-17:** la API key en texto plano en `~/.bash_history` (`[old key removed]`) ya no es la key activa — el usuario confirma que se rotó la semana pasada y Tomás ya tiene la key nueva en su backend. Se verificó que la key `legacy` actualmente en uso no coincide con el string expuesto. Sin acción adicional.
 - [ ] Hay dos copias completas y viejas del proyecto en el home del usuario (`~/soc-project-new/`, `~/Desktop/soc-project/`), aparte de la de producción en `/opt/sentinel-soc` — desorden, no se tocaron.

@@ -12,14 +12,23 @@ Severity depends on which VLAN the new device appeared on (edit
 VLAN_SEVERITY below if the network changes — keep it in sync with
 targets.conf / the VLANS[] array in 1c_arp_discovery.sh):
 
-    Management / Wiping VLANs   -> critical  (should never see a random NIC)
-    Floor / Printers / Office   -> medium
+    Management VLAN             -> critical  (should never see a random NIC)
+    Wiping / Floor / Printers /
+      Office                    -> medium
     Guest / Employees WiFi      -> skipped entirely (unknown personal
                                     devices are the expected, normal case
                                     there — alerting would be pure noise and
                                     a privacy problem, same reasoning
                                     scheduled_scan.sh already applies when it
                                     excludes that VLAN from port-scanning).
+
+Wiping was "critical" originally, on the assumption it should only ever
+have a small fixed set of known machines like Management. Confirmed
+otherwise 2026-09-17: it's a still-being-built-out HDD/NVMe/SAS wiping
+rack, devices are actively being added and removed as the team builds it
+out, and nothing there is inventoried yet -- "critical" on every new MAC
+was alerting on normal, expected churn. Revisit once that rack's device
+set stabilizes and someone can actually maintain a known-good list for it.
 
 Input (written by 1c_arp_discovery.sh): a TSV with one line per host seen,
     cidr<TAB>iface<TAB>ip<TAB>mac<TAB>vendor
@@ -42,7 +51,7 @@ DEFAULT_STATE = DATA_DIR / "mac_state.json"
 
 VLAN_SEVERITY = {
     "10.201.0.0/16":   "critical",  # Management
-    "10.21.0.0/16":    "critical",  # Wiping
+    "10.21.0.0/16":    "medium",    # Wiping -- actively being built out, not inventoried yet
     "10.69.0.0/16":    "medium",    # Floor
     "192.168.61.0/24": "medium",    # Printers
     "192.168.7.0/24":  "medium",    # Office

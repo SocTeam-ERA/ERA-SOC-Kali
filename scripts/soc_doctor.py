@@ -142,7 +142,7 @@ TIMERS = ["soc-watchdog.timer", "soc-disk-check.timer", "soc-ntfy-flush.timer",
           "soc-scan.timer", "soc-archive-alerts.timer",
           "soc-suricata-ruleset-update.timer", "soc-aide-check.timer",
           "soc-cleanup-results.timer", "soc-tor-refresh.timer", "soc-check-updates.timer",
-          "soc-chkrootkit-forwarder.timer", "soc-vuln-scan.timer"]
+          "soc-chkrootkit-forwarder.timer", "soc-vuln-scan.timer", "soc-vlan-segmentation.timer"]
 
 
 def check_timers() -> None:

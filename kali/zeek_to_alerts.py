@@ -43,14 +43,26 @@ DEFAULT_LOG = Path("/opt/zeek/logs/current/notice.log")
 # low-traffic VLAN worker (Printers, Guest WiFi, Office).
 #
 # CaptureLoss::Too_Much_Loss belongs here for the exact same reason -- it's
-# Zeek reporting it can't keep up with a busy interface, not an attacker on
-# the wire -- but was missing from this set. Confirmed 2026-09-17:
-# worker-floor (eth0, the busiest VLAN) hit ~100% estimated loss every
-# ~15min (Zeek's CaptureLossPeriod) and it alerted as a medium-severity
-# "intrusion", indistinguishable from a real detection. Root cause (a
-# single worker process undersized for that VLAN's traffic) fixed
-# separately in /opt/zeek/etc/node.cfg (lb_procs). If this comes back, it
-# should surface as a Zeek/zeekctl health problem, not a dashboard alert.
+# Zeek reporting on its own capture health, not an attacker on the wire --
+# but was missing from this set. Confirmed 2026-09-17: worker-floor (eth0)
+# hit ~100% estimated loss every ~15min (Zeek's CaptureLossPeriod) and it
+# alerted as a medium-severity "intrusion", indistinguishable from a real
+# detection.
+#
+# NOTE on root cause, corrected same day: first assumed a single worker
+# process couldn't keep up with eth0's traffic volume and split it into
+# multiple processes (lb_procs in /opt/zeek/etc/node.cfg) -- that did NOT
+# fix it (loss recurred within minutes even at lb_procs=3), and CPU usage
+# on every worker-floor process stayed under 1% the whole time, which
+# rules out "not enough processing capacity" as the actual cause.
+# CaptureLoss::Too_Much_Loss estimates loss from TCP sequence/ACK gaps, not
+# from a capture queue backing up -- it fires when Zeek isn't seeing BOTH
+# directions of other hosts' conversations, which points at eth0 not being
+# a true bidirectional mirror/SPAN port at the Proxmox vswitch level, not
+# at anything Zeek-side. Same suspected root cause as this project's
+# separate, still-unresolved SSH/network-loop investigation on the same
+# interface. Not fixable from this project's side -- keep the suppression
+# above regardless of whether the underlying capture gap ever gets fixed.
 NOISE_NOTICE_TYPES = {
     "CaptureLoss::Too_Little_Traffic",
     "CaptureLoss::Dropped_Packets",

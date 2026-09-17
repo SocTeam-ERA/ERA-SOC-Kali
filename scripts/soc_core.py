@@ -845,6 +845,38 @@ def record_asset_sightings(sightings: list) -> int:
     return created
 
 
+def record_dhcp_hostnames(sightings: list) -> int:
+    """Enrich EXISTING asset records with the hostname a device announced
+    during its DHCP handshake (Zeek's dhcp.log: mac + host_name/
+    client_fqdn from the DISCOVER/REQUEST) -- often far more identifying
+    than the MAC vendor lookup alone (see kali/dhcp_to_assets.py).
+
+    Never creates a new asset record -- only arp_to_alerts.py does that,
+    from an actual ARP sighting on a monitored VLAN. A MAC with no
+    existing asset record is skipped here (dhcp.log can see broadcast
+    domains this box's ARP sweep doesn't cover, and this project only
+    wants that info attached to an asset it independently confirmed is
+    really present). Each sighting is {"mac", "hostname"}. Returns how
+    many asset records actually changed.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    changed = 0
+    with diff_state_lock(ASSETS_FILE):
+        assets = load_assets()
+        for s in sightings:
+            mac = s["mac"]
+            rec = assets.get(mac)
+            if rec is None or rec.get("dhcp_hostname") == s["hostname"]:
+                continue
+            rec["dhcp_hostname"] = s["hostname"]
+            rec["dhcp_hostname_seen"] = now
+            assets[mac] = rec
+            changed += 1
+        if changed:
+            _save_assets(assets)
+    return changed
+
+
 def set_asset_annotation(mac: str, *, owner: Optional[str] = None,
                           notes: Optional[str] = None,
                           authorized: Optional[bool] = None,

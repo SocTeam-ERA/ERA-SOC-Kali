@@ -335,7 +335,7 @@ td.time .ago{color:var(--muted);font-size:10px;display:block}
     <div class="tablewrap">
       <table>
         <thead><tr>
-          <th style="width:150px">MAC</th><th>Vendor</th><th style="width:150px">VLAN</th>
+          <th style="width:150px">MAC</th><th>Vendor</th><th>DHCP Hostname</th><th style="width:150px">VLAN</th>
           <th style="width:130px">IP</th><th style="width:120px">First Seen</th>
           <th style="width:120px">Last Seen</th><th style="width:110px">Owner</th>
         </tr></thead>
@@ -815,12 +815,13 @@ function renderAssets(assets){
     <tr>
       <td><span class="mono-cell">${escHtml(a.mac)}</span></td>
       <td>${escHtml(a.vendor||'—')}</td>
+      <td>${escHtml(a.dhcp_hostname||'—')}</td>
       <td>${escHtml(a.cidr||'—')}</td>
       <td><span class="mono-cell ip">${escHtml(a.ip||'—')}</span></td>
       <td>${a.first_seen?ago(Date.parse(a.first_seen)):'—'}</td>
       <td>${a.last_seen?ago(Date.parse(a.last_seen)):'—'}</td>
       <td>${escHtml(a.owner||'—')}</td>
-    </tr>`).join('') || '<tr><td colspan="7" style="text-align:center;opacity:.6">no assets recorded yet</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="8" style="text-align:center;opacity:.6">no assets recorded yet</td></tr>';
 }
 async function pollAssets(){ renderAssets(await loadAssets()); }
 

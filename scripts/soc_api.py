@@ -20,13 +20,16 @@ not a single shared token: every key has a "role" of "read" (GET only) or
 key's user, not a client-supplied field.
 """
 from __future__ import annotations
-import json, os, secrets
+import json, os, secrets, threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
 import soc_core
 import correlate
 import soc_views
+import suppression_admin
+import log_search
+import playbooks
  
 HOST = os.environ.get("SOC_API_HOST", "0.0.0.0")
 PORT = int(os.environ.get("SOC_API_PORT", "8080"))
@@ -40,6 +43,10 @@ CORS = os.environ.get("SOC_API_CORS", "").strip()
 MAX_BODY_SIZE = 65536
 
 API_KEYS = {k["token"]: k for k in soc_core.load_api_keys()}
+
+# Searches read big log files; each runs in its own limited child process and at
+# most this many run at once, so nobody can saturate the disk by hammering /api/search.
+_SEARCH_SLOTS = threading.BoundedSemaphore(int(os.environ.get("SOC_SEARCH_SLOTS", "2")))
 
 def _to_epoch(v):
     if v is None: return None
@@ -117,7 +124,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         if CORS:
             self.send_header("Access-Control-Allow-Origin", CORS)
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
         self.end_headers()
     def do_GET(self):
@@ -187,11 +194,59 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, soc_views.sources())
         if path == "/api/detections":
             return self._send(200, soc_views.detections())
+        if path == "/api/suppressions":
+            return self._send(200, suppression_admin.list_detail())
+        if path == "/api/playbooks":
+            return self._send(200, playbooks.overview())
+        if path == "/api/playbooks/runs":
+            try:
+                limit = min(max(int((qs.get("limit") or ["50"])[0]), 1), 200)
+            except ValueError:
+                limit = 50
+            runs = playbooks.recent_runs(limit)
+            return self._send(200, {"count": len(runs), "runs": runs})
+        if path == "/api/search/sources":
+            return self._send(200, log_search.available_sources())
+        if path == "/api/search":
+            params = {k: (qs.get(k) or [None])[0] for k in ("source", "q", "since", "limit", "timeout")}
+            params = {k: v for k, v in params.items() if v is not None}
+            params.setdefault("source", "alerts")
+            if not _SEARCH_SLOTS.acquire(blocking=False):
+                return self._send(429, {"error": "too many searches running; try again in a few seconds"})
+            try:
+                result = log_search.run_isolated(params)
+            except ValueError as e:
+                return self._send(400, {"error": str(e)})
+            except RuntimeError as e:
+                return self._send(504 if "too long" in str(e) else 500, {"error": str(e)})
+            finally:
+                _SEARCH_SLOTS.release()
+            print(f"[*] {key['user']} searched {params.get('source')} q={params.get('q', '')[:60]!r}"
+                  f" -> {result['count']} result(s), {result['elapsed_ms']} ms")
+            return self._send(200, result)
         if path.startswith("/api/alerts/"):
             aid = path.rsplit("/", 1)[-1]
             for a in soc_core._load_snapshot():
                 if a.get("id") == aid: return self._send(200, a)
             return self._send(404, {"error": "alert not found", "id": aid})
+        return self._send(404, {"error": "not found", "path": path})
+    def do_DELETE(self):
+        parsed = urlparse(self.path); path = parsed.path.rstrip("/") or "/"
+        key = self._authenticate()
+        if not key:
+            return self._send(401, {"error": "unauthorized",
+                                    "hint": "send header: Authorization: Bearer <token>"})
+        if key["role"] != "write":
+            return self._send(403, {"error": "forbidden",
+                                    "hint": f"key for {key['user']!r} is read-only"})
+        parts = path.split("/")
+        if len(parts) == 4 and parts[1:3] == ["api", "suppressions"]:
+            try:
+                removed = suppression_admin.delete_rule(unquote(parts[3]), key["user"])
+            except ValueError as e:
+                return self._send(404 if "not found" in str(e) else 400, {"error": str(e)})
+            print(f"[*] {key['user']} deleted suppression {parts[3]}")
+            return self._send(200, {"deleted": removed})
         return self._send(404, {"error": "not found", "path": path})
     def do_POST(self):
         parsed = urlparse(self.path); path = parsed.path.rstrip("/") or "/"
@@ -203,6 +258,31 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": "forbidden",
                                     "hint": f"key for {key['user']!r} is read-only"})
         parts = path.split("/")
+        # /api/suppressions (create) and /api/suppressions/preview
+        if parts[1:3] == ["api", "suppressions"] and (len(parts) == 3 or parts[3:] == ["preview"]):
+            body, err = self._read_json_body()
+            if err:
+                return self._send(*err)
+            try:
+                if len(parts) == 4:
+                    if (body.get("alert_id") is None) == (body.get("match") is None):
+                        raise ValueError("send either 'alert_id' (with 'scope') or 'match'")
+                    match = body.get("match")
+                    if body.get("alert_id") is not None:
+                        match = suppression_admin.match_from_alert(
+                            suppression_admin._find_alert(str(body["alert_id"])), body.get("scope", "similar"))
+                    days = body.get("days", 30)
+                    if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 365:
+                        raise ValueError("days must be an integer between 1 and 365")
+                    return self._send(200, {"match": match, "preview": suppression_admin.preview(match, days)})
+                created = suppression_admin.create_rule(
+                    key["user"], body.get("reason"), match=body.get("match"), alert_id=body.get("alert_id"),
+                    scope=body.get("scope", "similar"), expires_days=body.get("expires_days", suppression_admin.DEFAULT_DAYS),
+                    resolve_existing=bool(body.get("resolve_existing", False)))
+            except ValueError as e:
+                return self._send(404 if "not found" in str(e) else 400, {"error": str(e)})
+            print(f"[*] {key['user']} created suppression {created['rule']['id']}")
+            return self._send(201, created)
         # /api/incidents/<id or number>: status, classification, owner, comment
         if len(parts) == 4 and parts[1] == "api" and parts[2] == "incidents":
             body, err = self._read_json_body()
@@ -276,6 +356,9 @@ def main():
           f"(CORS: {CORS or 'off'})")
     print("[*] Endpoints: /api/health  /api/summary  /api/alerts  /api/alerts/<id>  /api/hosts  /api/assets")
     print("[*] Also:      /api/incidents  /api/incidents/<id|number>  /api/entities  /api/entities/<type:value>  /api/metrics  /api/sources  /api/detections")
+    print("[*] Automation: GET /api/playbooks  GET /api/playbooks/runs")
+    print("[*] Search:    GET /api/search?source=alerts|suricata|zeek:<log>&q=...&since=1h&limit=100   GET /api/search/sources")
+    print("[*] Suppress:  /api/suppressions  POST /api/suppressions/preview  POST /api/suppressions  DELETE /api/suppressions/<id>")
     print("[*] Write:     POST /api/incidents/<id|number>  {\"status\": \"new|active|closed\", \"classification\": \"true_positive|false_positive|benign|undetermined\", \"owner\": \"...\", \"comment\": \"...\"}")
     print("[*] Write:     POST /api/alerts/<id>/status  {\"status\": \"open|acknowledged|resolved\", \"note\": \"...\"}")
     print("[*] Write:     POST /api/assets/<mac>/notes  {\"owner\": \"...\", \"notes\": \"...\", \"authorized\": true|false}")

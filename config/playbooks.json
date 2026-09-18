@@ -1,0 +1,38 @@
+{
+  "playbooks": [
+    {
+      "id": "notify-critical-incidents",
+      "name": "Tell the SOC channel when a critical incident opens",
+      "enabled": false,
+      "dry_run": false,
+      "cooldown_minutes": 10,
+      "trigger": {"match": {"detector": "correlation", "severity": "critical"}},
+      "actions": [
+        {"type": "webhook", "url_env": "SOC_WEBHOOK_URL", "format": "text"}
+      ]
+    },
+    {
+      "id": "assign-new-incidents",
+      "name": "Assign every new incident to the on-call analyst",
+      "enabled": false,
+      "dry_run": false,
+      "cooldown_minutes": 0,
+      "trigger": {"match": {"detector": "correlation", "details_has": ["incident_id"]}},
+      "actions": [
+        {"type": "assign_incident", "owner": "on-call"},
+        {"type": "comment_incident", "text": "Assigned automatically by playbook {playbook}."}
+      ]
+    },
+    {
+      "id": "push-threat-intel-hits",
+      "name": "Push a phone notification for any threat-intel match",
+      "enabled": false,
+      "dry_run": false,
+      "cooldown_minutes": 30,
+      "trigger": {"match": {"details_has": ["threat_intel.ip_matches"]}},
+      "actions": [
+        {"type": "ntfy"}
+      ]
+    }
+  ]
+}

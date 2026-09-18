@@ -235,6 +235,19 @@ def check_platform() -> None:
     open_incs = [i for i in incs if i["status"] != "closed"]
     check(OK, f"incidents: {len(open_incs)} open, {len(incs) - len(open_incs)} closed")
 
+    import playbooks
+    pbs, pb_errors = playbooks.load_playbooks()
+    for err in pb_errors:
+        check(FAIL if "cannot read playbooks" in err else WARN, f"playbooks: {err}")
+    ov = playbooks.overview()
+    enabled = [p for p in ov["playbooks"] if p["enabled"]]
+    check(OK, f"playbooks: {len(enabled)} enabled ({sum(1 for p in enabled if p['dry_run'])} in dry-run), "
+              f"{len(ov['playbooks']) - len(enabled)} disabled")
+    for p in enabled:
+        if p["errors_24h"]:
+            check(WARN, f"playbooks: {p['id']} had {p['errors_24h']} failed action(s) in the last 24h "
+                        "(python3 scripts/playbooks.py --runs)")
+
     meta = threat_intel._load_meta()
     for feed in ("kev", "feodo"):
         m = meta.get(feed)

@@ -623,6 +623,14 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
     except Exception:
         pass
 
+    # group_key must exist before suppression rules run (dashboard rules can
+    # match on it); it is cheap and stateless, unlike the batch id set later.
+    try:
+        import alert_context
+        record.setdefault("details", {}).setdefault("group_key", alert_context.group_key(record))
+    except Exception:
+        pass
+
     # 0e) known-benign alerts declared in config/suppressions.json (see
     #     suppressions.py). Kept out of the feed, the backend and ntfy, but
     #     recorded in alerts_suppressed.jsonl. Fails open: any problem here
@@ -710,6 +718,13 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
     #    reaches someone even when that link is down.
     if record.get("severity") == "critical":
         notify_critical(record)
+
+    # 5) automatic responses configured in config/playbooks.json (see playbooks.py)
+    try:
+        import playbooks
+        playbooks.run_for_alert(record)
+    except Exception:
+        pass
 
     if echo:
         sev = record["severity"].upper()

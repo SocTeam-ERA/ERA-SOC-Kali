@@ -21,11 +21,12 @@ Rules live in config/suppressions.json (override with SOC_SUPPRESSIONS_FILE):
     ]}
 
 match: every listed criterion must hold (AND) and at least one is required.
-  detector, type      exact string
+  detector, type      a string or a list of strings (any of)
   severity            a string or a list of strings
   source_ip           one IP or a CIDR
   title_regex         re.search, case-insensitive
   details             each key must equal that key in the alert's details
+  details_has         dotted paths that must be present in details (e.g. "mitre")
 Optional: expires (YYYY-MM-DD, UTC; the rule stops applying after that day),
 added_by, added. allow_critical must be true for a rule to hide a critical alert.
 
@@ -44,22 +45,21 @@ CLI:
 """
 from __future__ import annotations
 
-import ipaddress
 import json
 import os
-import re
 import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-SEVERITIES = ("normal", "medium", "critical")
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import alert_match  # noqa: E402
+
 CONFIG_FILE = Path(os.environ.get(
     "SOC_SUPPRESSIONS_FILE",
     Path(__file__).resolve().parent.parent / "config" / "suppressions.json"))
 
 _RULE_KEYS = {"id", "reason", "added_by", "added", "expires", "allow_critical", "match"}
-_MATCH_KEYS = {"detector", "type", "severity", "source_ip", "title_regex", "details"}
 
 _cache: Dict[str, Any] = {"sig": None, "rules": [], "errors": []}
 
@@ -83,12 +83,7 @@ def _compile(raw: Any, seen: set) -> Dict[str, Any]:
     reason = raw.get("reason")
     if not isinstance(reason, str) or not reason.strip():
         raise ValueError("missing 'reason' (say why this is safe to ignore)")
-    match = raw.get("match")
-    if not isinstance(match, dict) or not match:
-        raise ValueError("'match' must list at least one criterion")
-    unknown = set(match) - _MATCH_KEYS
-    if unknown:
-        raise ValueError(f"unknown match key(s) {sorted(unknown)}")
+    cm = alert_match.compile_match(raw.get("match"))
 
     rule: Dict[str, Any] = {"id": rid, "reason": reason, "raw": raw,
                             "allow_critical": bool(raw.get("allow_critical", False)),
@@ -99,30 +94,7 @@ def _compile(raw: Any, seen: set) -> Dict[str, Any]:
         except ValueError:
             raise ValueError(f"bad 'expires' {raw['expires']!r} (use YYYY-MM-DD)")
 
-    for key in ("detector", "type"):
-        if key in match and not isinstance(match[key], str):
-            raise ValueError(f"match.{key} must be a string")
-    if "severity" in match:
-        sev = match["severity"]
-        sevs = [sev] if isinstance(sev, str) else sev
-        if not isinstance(sevs, list) or not sevs or any(s not in SEVERITIES for s in sevs):
-            raise ValueError(f"match.severity must be one or more of {SEVERITIES}")
-        rule["severities"] = set(sevs)
-    if "source_ip" in match:
-        try:
-            rule["network"] = ipaddress.ip_network(str(match["source_ip"]), strict=False)
-        except ValueError:
-            raise ValueError(f"bad match.source_ip {match['source_ip']!r}")
-    if "title_regex" in match:
-        try:
-            rule["title_re"] = re.compile(str(match["title_regex"]), re.IGNORECASE)
-        except re.error as e:
-            raise ValueError(f"bad match.title_regex: {e}")
-    if "details" in match:
-        if not isinstance(match["details"], dict) or not match["details"]:
-            raise ValueError("match.details must be a non-empty object")
-        rule["details"] = match["details"]
-    rule["match"] = match
+    rule["cm"] = cm
     return rule
 
 
@@ -167,26 +139,7 @@ def is_expired(rule: Dict[str, Any], today: Optional[date] = None) -> bool:
 
 
 def _matches(rule: Dict[str, Any], record: Dict[str, Any]) -> bool:
-    m = rule["match"]
-    if "detector" in m and record.get("detector") != m["detector"]:
-        return False
-    if "type" in m and record.get("type") != m["type"]:
-        return False
-    if "severities" in rule and record.get("severity") not in rule["severities"]:
-        return False
-    if "network" in rule:
-        try:
-            if ipaddress.ip_address(record.get("source_ip") or "") not in rule["network"]:
-                return False
-        except ValueError:
-            return False
-    if "title_re" in rule and not rule["title_re"].search(record.get("title") or ""):
-        return False
-    if "details" in rule:
-        details = record.get("details") or {}
-        if any(k not in details or details[k] != v for k, v in rule["details"].items()):
-            return False
-    return True
+    return alert_match.matches(rule["cm"], record)
 
 
 def find_match(record: Dict[str, Any], rules: Optional[List[Dict[str, Any]]] = None

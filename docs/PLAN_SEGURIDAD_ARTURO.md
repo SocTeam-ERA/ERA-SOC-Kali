@@ -153,7 +153,24 @@ Estructura sugerida: *"Desde un puerto en la VLAN X se alcanza A, B y C — incl
 - Flipper Zero.
 - WiFi Pineapple Mark VII.
 - WiFi Pineapple Pager.
+- Proxmark3 — complementa al Flipper Zero para clonación/pruebas de tarjetas RFID de acceso (el Flipper tiene alcance/soporte limitado; Proxmark3 es la herramienta seria para esto).
 (Esto amplía el punto ya anotado en la sección 1.7 de "adaptador WiFi en modo monitor para auditoría WiFi".)
+
+**Ya instalado en este Kali (sin setup adicional cuando arranque Etapa 2):**
+- **Dradis** — plataforma de organización/reporte de pentesting, ya presente en el sistema (encontrado 2026-09-17 durante la revisión de chkrootkit). Buen lugar para consolidar los hallazgos de cada ronda mensual en vez de armar el reporte desde cero cada vez.
+- **Impacket** (ya usado hoy para `GetUserSPNs`/`GetNPUsers`) trae más herramientas en la misma suite: `secretsdump.py` (extrae hashes NTDS.dit/SAM con acceso de Domain Admin), `wmiexec.py`/`psexec.py` (ejecución remota para movimiento lateral).
+- **wifite** — auditoría WiFi automatizada, complementa al Pineapple.
+- **sqlmap** — pruebas de inyección SQL, para cuando se auditen los servicios web internos que Fase 1 ya encontró (vía whatweb/nikto).
+
+**Para completar el kit de Active Directory:**
+- **Kerbrute** (no instalado todavía) — enumeración de usuarios y "password spraying" (una contraseña contra muchos usuarios, en vez de muchas contra uno) — mucho menor riesgo de bloqueo de cuentas que Hydra para ese caso de uso.
+- **ADRecon** (no instalado todavía) — reporte automatizado y completo de la estructura de Active Directory.
+
+**Para las pruebas web internas:**
+- **Burp Suite** (Community es gratis) — estándar para pruebas de aplicaciones web.
+
+**Para RF/WiFi adicional:**
+- **hcxdumptool/hcxtools** — captura de handshakes WPA/PMKID, se conecta directo con hashcat para crackearlos después.
 
 **Cadencia:** una vez arrancada Etapa 2, la idea es correr este tipo de pruebas **mensualmente**, como programa continuo de mejora — no una sola vez. Ejecución **supervisada** (alguien presente mientras corre), no automatizada por completo vía timer, dado el riesgo de bloqueos de cuentas / impacto en la red de herramientas como Responder/Hydra.
 

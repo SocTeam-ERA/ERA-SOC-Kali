@@ -132,5 +132,6 @@ log "Tested $TOTAL cross-VLAN pair(s), $REACHABLE reachable (not isolated)."
 ok "Results: $RESULTS_FILE"
 
 if command -v python3 >/dev/null 2>&1; then
-  python3 "$SUITE_DIR/vlan_segmentation_to_alerts.py" "$RESULTS_FILE"
+  python3 "$SUITE_DIR/vlan_segmentation_to_alerts.py" "$RESULTS_FILE" \
+      --diff-state "$SUITE_DIR/../data/vlan_segmentation_state.json"
 fi

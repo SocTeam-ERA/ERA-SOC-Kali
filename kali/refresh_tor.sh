@@ -21,3 +21,7 @@ mark_scan_start
 # NOT exec: mark_scan_start's cleanup runs on this shell's EXIT trap, which
 # exec would skip entirely by replacing this process before it ever exits.
 python3 "$(dirname "$0")/../scripts/proxy_check.py" --refresh-tor
+# Same daily run also refreshes the threat-intel feeds (CISA KEV, Feodo Tracker)
+# and rebuilds the merged IOC list. A failure keeps the previous copy, so it
+# must never fail the Tor refresh's exit status.
+python3 "$(dirname "$0")/../scripts/threat_intel.py" --refresh || true

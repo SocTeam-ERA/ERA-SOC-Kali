@@ -107,6 +107,15 @@ def run() -> int:
 
     if changed:
         save_state(state)
+
+    # Also check that the data sources themselves are still producing data.
+    # Kept separate from the service checks above: a failure here must never
+    # stop the watchdog from doing its main job.
+    try:
+        import source_health
+        source_health.run()
+    except Exception as e:
+        print(f"[watchdog] source health check failed: {e}", file=sys.stderr)
     return 0
 
 

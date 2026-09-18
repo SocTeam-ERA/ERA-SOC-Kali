@@ -127,3 +127,17 @@ def tag(record: Dict[str, Any]) -> List[Dict[str, Any]]:
             seen.add(technique)
             out.append(_entry(technique, basis))
     return out
+
+
+def coverage_map() -> Dict[str, List[str]]:
+    """technique id -> sorted detectors that can produce a tag for it."""
+    out: Dict[str, set] = {}
+    for det, _rx, techs in _TITLE_RULES:
+        for t, _basis in techs:
+            out.setdefault(t, set()).add(det or "*")
+    for _rx, techs in _AIDE_PATH_RULES:
+        for t, _basis in techs:
+            out.setdefault(t, set()).add("aide")
+    for tid in _PORT_TECHNIQUES.values():
+        out.setdefault(tid, set()).update({"kali_scan", "port_scanner"})
+    return {t: sorted(d) for t, d in out.items()}

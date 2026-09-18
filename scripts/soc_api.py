@@ -2,9 +2,11 @@
 """Sentinel SOC — REST API exposing scan results/alerts as JSON.
 
 Mostly read-only: every GET endpoint just reads the current snapshot.
-The two write endpoints are deliberately narrow:
+The write endpoints are deliberately narrow:
   - POST /api/alerts/<id>/status can only change an alert's triage status
     (open / acknowledged / resolved), nothing else about the alert.
+  - POST /api/incidents/<id> can only change an incident's status,
+    classification, owner and comments (see correlate.update_incident).
   - POST /api/assets/<mac>/notes can only set owner/notes/authorized on an
     already-seen asset (see soc_core.set_asset_annotation) -- it can't
     create an asset or touch anything a scan itself writes (ip, vendor,
@@ -21,8 +23,10 @@ from __future__ import annotations
 import json, os, secrets
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 import soc_core
+import correlate
+import soc_views
  
 HOST = os.environ.get("SOC_API_HOST", "0.0.0.0")
 PORT = int(os.environ.get("SOC_API_PORT", "8080"))
@@ -82,6 +86,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", CORS)
             self.send_header("Access-Control-Allow-Headers", "Authorization")
         self.end_headers(); self.wfile.write(body)
+    def _read_json_body(self):
+        """Parse a small JSON request body. Returns (body, None) or (None, (code, error payload))."""
+        try:
+            length = int(self.headers.get("Content-Length", "0") or "0")
+        except ValueError:
+            return None, (400, {"error": "invalid Content-Length"})
+        if length > MAX_BODY_SIZE:
+            return None, (413, {"error": f"body too large (max {MAX_BODY_SIZE} bytes)"})
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            return None, (400, {"error": "invalid JSON body"})
+        if not isinstance(body, dict):
+            return None, (400, {"error": "JSON body must be an object"})
+        return body, None
     def _authenticate(self):
         """Return the matched API key entry ({token, user, role}), or None."""
         auth = self.headers.get("Authorization", "")
@@ -133,6 +152,41 @@ class Handler(BaseHTTPRequestHandler):
                 assets = [a for a in assets if a.get("cidr") == vlan]
             assets.sort(key=lambda a: a.get("last_seen") or "", reverse=True)
             return self._send(200, {"count": len(assets), "assets": assets})
+        if path == "/api/incidents":
+            incs = correlate.list_incidents((qs.get("status") or [None])[0], (qs.get("severity") or [None])[0])
+            try:
+                limit = min(max(int((qs.get("limit") or ["100"])[0]), 1), 500)
+            except ValueError:
+                limit = 100
+            rows = [{**{k: v for k, v in i.items() if k != "comments"}, "comment_count": len(i["comments"])}
+                    for i in incs[:limit]]
+            return self._send(200, {"count": len(rows), "incidents": rows})
+        if path.startswith("/api/incidents/"):
+            inc = correlate.get_incident(unquote(path[len("/api/incidents/"):]))
+            if inc is None:
+                return self._send(404, {"error": "incident not found"})
+            wanted = set(inc["alert_ids"])
+            alerts = [a for a in soc_core._load_snapshot() if a.get("id") in wanted]
+            alerts.sort(key=lambda a: a.get("timestamp", ""))
+            return self._send(200, {**inc, "alerts": alerts, "alerts_not_in_feed": len(wanted) - len(alerts)})
+        if path == "/api/entities":
+            try:
+                limit = min(max(int((qs.get("limit") or ["50"])[0]), 1), 200)
+            except ValueError:
+                limit = 50
+            rows = soc_views.entities((qs.get("type") or [None])[0], limit)
+            return self._send(200, {"count": len(rows), "entities": rows})
+        if path.startswith("/api/entities/"):
+            detail = soc_views.entity_detail(unquote(path[len("/api/entities/"):]))
+            if detail is None:
+                return self._send(404, {"error": "entity not found (use type:value, e.g. mac:aa:bb:cc:dd:ee:ff or ip:10.0.0.5)"})
+            return self._send(200, detail)
+        if path == "/api/metrics":
+            return self._send(200, soc_views.metrics())
+        if path == "/api/sources":
+            return self._send(200, soc_views.sources())
+        if path == "/api/detections":
+            return self._send(200, soc_views.detections())
         if path.startswith("/api/alerts/"):
             aid = path.rsplit("/", 1)[-1]
             for a in soc_core._load_snapshot():
@@ -148,8 +202,22 @@ class Handler(BaseHTTPRequestHandler):
         if key["role"] != "write":
             return self._send(403, {"error": "forbidden",
                                     "hint": f"key for {key['user']!r} is read-only"})
-        # only route: /api/alerts/<id>/status
         parts = path.split("/")
+        # /api/incidents/<id or number>: status, classification, owner, comment
+        if len(parts) == 4 and parts[1] == "api" and parts[2] == "incidents":
+            body, err = self._read_json_body()
+            if err:
+                return self._send(*err)
+            try:
+                updated = correlate.update_incident(
+                    unquote(parts[3]), key["user"], status=body.get("status"),
+                    classification=body.get("classification"), owner=body.get("owner"),
+                    comment=body.get("comment"))
+            except ValueError as e:
+                return self._send(404 if "not found" in str(e) else 400, {"error": str(e)})
+            print(f"[*] {key['user']} updated incident {parts[3]}")
+            return self._send(200, updated)
+        # /api/alerts/<id>/status
         if len(parts) == 5 and parts[1] == "api" and parts[2] == "alerts" and parts[4] == "status":
             aid = parts[3]
             try:
@@ -207,6 +275,8 @@ def main():
           f"({len(API_KEYS)} key(s): {n_write} write, {len(API_KEYS) - n_write} read-only)   "
           f"(CORS: {CORS or 'off'})")
     print("[*] Endpoints: /api/health  /api/summary  /api/alerts  /api/alerts/<id>  /api/hosts  /api/assets")
+    print("[*] Also:      /api/incidents  /api/incidents/<id|number>  /api/entities  /api/entities/<type:value>  /api/metrics  /api/sources  /api/detections")
+    print("[*] Write:     POST /api/incidents/<id|number>  {\"status\": \"new|active|closed\", \"classification\": \"true_positive|false_positive|benign|undetermined\", \"owner\": \"...\", \"comment\": \"...\"}")
     print("[*] Write:     POST /api/alerts/<id>/status  {\"status\": \"open|acknowledged|resolved\", \"note\": \"...\"}")
     print("[*] Write:     POST /api/assets/<mac>/notes  {\"owner\": \"...\", \"notes\": \"...\", \"authorized\": true|false}")
     try:

@@ -1,0 +1,117 @@
+{
+  "ignore_entities": [],
+  "rules": [
+    {
+      "id": "scan-then-exploit",
+      "name": "Scan followed by exploit attempt",
+      "severity": "critical",
+      "type": "sequence",
+      "window_minutes": 60,
+      "steps": [
+        {
+          "detector": [
+            "traffic_capture",
+            "suricata"
+          ],
+          "title_regex": "(^Port scan on the wire|^ET SCAN\\b)"
+        },
+        {
+          "detector": "suricata",
+          "title_regex": "^ET (EXPLOIT|WEB_SERVER|WEB_SPECIFIC_APPS)\\b"
+        }
+      ]
+    },
+    {
+      "id": "bruteforce-then-login",
+      "name": "Brute force followed by a successful login",
+      "severity": "critical",
+      "type": "sequence",
+      "window_minutes": 30,
+      "steps": [
+        {
+          "detector": [
+            "login_monitor",
+            "zeek"
+          ],
+          "title_regex": "^(Brute-force|Failed login from unknown IP|SSH::Password_Guessing)"
+        },
+        {
+          "detector": "login_monitor",
+          "title_regex": "^(Login from NEW IP|Successful login after)"
+        }
+      ]
+    },
+    {
+      "id": "new-device-then-scan",
+      "name": "New device that then scans the network",
+      "severity": "critical",
+      "type": "sequence",
+      "window_minutes": 1440,
+      "steps": [
+        {
+          "detector": "arp_discovery",
+          "title_regex": "^New device on VLAN"
+        },
+        {
+          "detector": [
+            "traffic_capture",
+            "suricata"
+          ],
+          "title_regex": "(^Port scan on the wire|^ET SCAN\\b)"
+        }
+      ]
+    },
+    {
+      "id": "multi-source-host",
+      "name": "Several detectors flagged the same host",
+      "severity": "medium",
+      "type": "threshold",
+      "window_minutes": 30,
+      "count": 3,
+      "distinct": "detector",
+      "match": {
+        "detector": [
+          "login_monitor",
+          "suricata",
+          "zeek",
+          "traffic_capture",
+          "osquery",
+          "chkrootkit",
+          "malware_detector",
+          "phishing_detector",
+          "arp_discovery"
+        ],
+        "severity": [
+          "medium",
+          "critical"
+        ]
+      }
+    },
+    {
+      "id": "threat-intel-ip",
+      "name": "Contact with a known-malicious IP",
+      "severity": "critical",
+      "type": "single",
+      "match": {
+        "details_has": [
+          "threat_intel.ip_matches"
+        ]
+      },
+      "roles": [
+        "source",
+        "destination"
+      ]
+    },
+    {
+      "id": "kev-exploit-activity",
+      "name": "Activity involving a known-exploited vulnerability",
+      "severity": "medium",
+      "type": "single",
+      "match": {
+        "details_has": [
+          "threat_intel.kev"
+        ]
+      }
+    }
+  ]
+}

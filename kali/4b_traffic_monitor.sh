@@ -110,8 +110,12 @@ while true; do
       # write to it concurrently), so an unrelated alert landing in the
       # same instant used to make an unrelated window's traffic look like
       # it had raised something.
+      # threat_intel.py --refresh writes local + Feodo Tracker IPs here; fall
+      # back to the hand-kept list if it has never run.
+      IOC_LIST="$DIR/../data/threat_intel/ioc_ips_merged.txt"
+      [[ -s "$IOC_LIST" ]] || IOC_LIST="$DIR/ioc_ips.txt"
       RAISED=$(python3 "$DIR/traffic_to_alerts.py" "$TSV" \
-          --ioc-ips "$DIR/ioc_ips.txt" --bad-domains "$DIR/bad_domains.txt" \
+          --ioc-ips "$IOC_LIST" --bad-domains "$DIR/bad_domains.txt" \
           --pcap "$PCAP_FINAL") || { warn "traffic_to_alerts.py failed on $TSV (continuing)"; RAISED=0; }
       RAISED="${RAISED:-0}"
       if [[ "$RAISED" -gt 0 ]] 2>/dev/null; then

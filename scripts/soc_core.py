@@ -640,6 +640,34 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
             print(f"[{record['timestamp']}] SUPPRESSED by {rule['id']}: {record['title']}")
         return record
 
+    # 0f) common fields under details: entities, group_key, batch_id (see
+    #     alert_context.py). Never blocks an alert.
+    try:
+        import alert_context
+        alert_context.add_context(record)
+    except Exception:
+        pass
+
+    # 0g) threat-intel matches under details["threat_intel"] (see threat_intel.py)
+    try:
+        from threat_intel import enrich as _ti_enrich
+        ti = _ti_enrich(record)
+        if ti:
+            record.setdefault("details", {})["threat_intel"] = ti
+    except Exception:
+        pass
+
+    # 0h) correlation: may attach this alert to an incident (see correlate.py).
+    #     A follow-up "Incident opened" alert is emitted after this one is stored.
+    followup = None
+    try:
+        import correlate
+        incident_id, followup = correlate.on_alert(record)
+        if incident_id:
+            record.setdefault("details", {})["incident_id"] = incident_id
+    except Exception:
+        followup = None
+
     # 1) append-only audit log
     with ALERTS_LOG.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
@@ -687,6 +715,11 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
         sev = record["severity"].upper()
         print(f"[{record['timestamp']}] {sev:<8} {record['type']:<9} "
               f"{record.get('source_ip') or '-':<15} {record['title']}")
+    if followup is not None:
+        try:
+            emit_alert(followup, echo=echo)
+        except Exception:
+            pass
     return record
 
 

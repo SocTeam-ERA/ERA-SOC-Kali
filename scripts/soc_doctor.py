@@ -223,6 +223,48 @@ def check_suppressions() -> None:
             check(OK, f"suppressions: {r['id']} hid {hits.get(r['id'], 0)} alert(s) in the last 24h")
 
 
+def check_platform() -> None:
+    import correlate, threat_intel
+    rules, _ignore, errors = correlate.load_rules()
+    for err in errors:
+        check(FAIL if "cannot read rules" in err else WARN, f"correlation: {err}")
+    if not errors:
+        active = sum(1 for r in rules if r["enabled"])
+        check(OK, f"correlation: {active} active rule(s), file valid")
+    incs = correlate.list_incidents()
+    open_incs = [i for i in incs if i["status"] != "closed"]
+    check(OK, f"incidents: {len(open_incs)} open, {len(incs) - len(open_incs)} closed")
+
+    meta = threat_intel._load_meta()
+    for feed in ("kev", "feodo"):
+        m = meta.get(feed)
+        if not m:
+            check(WARN, f"threat intel: {feed} never downloaded -- run: python3 scripts/threat_intel.py --refresh")
+            continue
+        age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(m["fetched"])).total_seconds() / 3600
+        check(OK if age_h <= 72 else WARN,
+              f"threat intel: {feed} {m['count']} entries, refreshed {age_h:.0f}h ago"
+              + ("" if age_h <= 72 else " (older than 3 days -- is soc-tor-refresh.timer running?)"))
+
+    state_file = DATA_DIR / "source_health.json"
+    try:
+        state = json.loads(state_file.read_text())
+        age_min = (datetime.now(timezone.utc) - datetime.fromisoformat(state["checked"])).total_seconds() / 60
+    except (OSError, ValueError, KeyError):
+        check(WARN, "data sources: no health state yet (written by soc-watchdog every 2 minutes)")
+        return
+    if age_min > 15:
+        check(WARN, f"data sources: health last checked {age_min:.0f} min ago -- is soc-watchdog.timer running?")
+    for src in state["sources"]:
+        if src["status"] == "stale":
+            check(WARN, f"data sources: {src['name']} has been silent for {src['age_minutes']:.0f} min "
+                        f"(limit {src['max_age_minutes']})")
+    bad = sum(1 for s in state["sources"] if s["status"] == "stale")
+    ok_n = sum(1 for s in state["sources"] if s["status"] == "healthy")
+    if not bad:
+        check(OK, f"data sources: {ok_n} healthy, {len(state['sources']) - ok_n} not measurable from here")
+
+
 def main() -> int:
     print("=" * 72)
     print(" SENTINEL SOC -- pipeline health check")
@@ -236,6 +278,7 @@ def main() -> int:
         ("disk space", check_disk),
         ("last scheduled scan", check_last_scan),
         ("suppression rules", check_suppressions),
+        ("detection platform", check_platform),
     ]:
         print(f"\n-- {title} --")
         fn()

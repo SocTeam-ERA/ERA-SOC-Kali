@@ -38,7 +38,7 @@ from pathlib import Path
 # make soc_core importable
 SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
-from soc_core import Alert, emit_alert, diff_state_lock  # noqa: E402
+from soc_core import Alert, emit_alert, diff_state_lock, load_assets  # noqa: E402
 
 HIGH_RISK_PORTS = {21, 23, 135, 139, 445, 1433, 3306, 3389, 5432, 5900, 6379, 27017, 9200}
 
@@ -305,6 +305,36 @@ def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | Non
     ))
 
 
+def build_ip_to_mac_map() -> dict[str, str]:
+    """{ip: mac} from the asset inventory (data/assets.json, kept fresh by
+    arp_to_alerts.py on every scan cycle, right before nmap runs).
+
+    Confirmed 2026-09-18: keying port-tracking state by IP alone breaks down
+    on a DHCP network -- the same physical device gets a new IP and looks
+    "brand new" (every one of its normal ports floods in as "new"), and an
+    old IP handed to a different device looks like "the same host" changed.
+    MAC is the far more stable identity for a real device (excluding
+    intentionally-randomized Wi-Fi MACs, which aren't port-scanned at all --
+    see scheduled_scan.sh's Guest WiFi exclusion -- so this doesn't need to
+    handle that case).
+    """
+    out: dict[str, str] = {}
+    for mac, rec in load_assets().items():
+        ip = rec.get("ip")
+        if ip:
+            out[ip] = mac
+    return out
+
+
+def device_key(ip: str, ip_to_mac: dict[str, str]) -> str:
+    """The identity a host's port history is tracked under: its MAC when the
+    asset inventory has one for its current IP, otherwise a fallback that
+    behaves exactly like the old IP-only tracking (safe default when a MAC
+    can't be resolved -- never silently assumes continuity it can't verify)."""
+    mac = ip_to_mac.get(ip)
+    return mac if mac else f"ip:{ip}"
+
+
 def _vuln_state_path(diff_state: Path) -> Path:
     return diff_state.with_name(diff_state.stem + "_vulns" + diff_state.suffix)
 
@@ -390,12 +420,18 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
     # ---- change-detection mode ----
     # Locked so a manual run can't race the scheduled job (or another manual
     # run) on the same state file -- see diff_state_lock()'s docstring.
+    ip_to_mac = build_ip_to_mac_map()
+    resolved = sum(1 for ip in current if ip in ip_to_mac)
+    print(f"[*] Device identity: {resolved}/{len(current)} host(s) resolved to a MAC "
+          f"via the asset inventory; the rest fall back to IP-only tracking.")
+
     with diff_state_lock(diff_state):
         previous = _load_state(diff_state)
 
         if not previous:
             # first run: seed the baseline quietly, one summary alert (no flood)
-            new_state = {ip: {k: v["service"] for k, v in ports.items()} for ip, ports in current.items()}
+            new_state = {device_key(ip, ip_to_mac): {"ip": ip, "ports": {k: v["service"] for k, v in ports.items()}}
+                         for ip, ports in current.items()}
             host_count = len(current)
             port_count = sum(len(p) for p in current.values())
             emit_alert(Alert(
@@ -423,27 +459,37 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
         # run get their entry touched; anything absent from `current`
         # keeps whatever state it already had, so a transient miss no
         # longer costs that host its history.
+        #
+        # Keyed by device_key() (MAC when resolvable), not IP -- confirmed
+        # 2026-09-18: on a DHCP network, keying this by IP meant a laptop
+        # renewing its lease looked like a brand-new host (every normal
+        # port flagged "new") and an IP handed to a different device looked
+        # like the SAME host's ports changed. A device with no resolvable
+        # MAC falls back to "ip:<addr>" -- identical behavior to before this
+        # change, never assumes continuity it can't verify.
         new_state = dict(previous)
         new_c = closed_c = 0
         for ip, ports in current.items():
-            prev_ports = previous.get(ip, {})
+            key = device_key(ip, ip_to_mac)
+            prev_entry = previous.get(key, {})
+            prev_ports = prev_entry.get("ports", {})
             new_keys = set(ports) - set(prev_ports)
             # co-occurrence check across THIS host's newly-opened ports only --
             # see APPLE_SYNC_PORT's comment above.
             new_port_nums = {ports[k]["port"] for k in new_keys}
             has_sync_port = APPLE_SYNC_PORT in new_port_nums
-            for key in new_keys:                                   # newly opened
-                is_apple = ports[key]["port"] == APPLE_SYNC_PORT or (
-                    ports[key]["port"] == APPLE_SYNC_COMPANION_PORT and has_sync_port)
-                emit_port(ports[key], ip, hostnames.get(ip), baseline, change="new",
+            for pkey in new_keys:                                  # newly opened
+                is_apple = ports[pkey]["port"] == APPLE_SYNC_PORT or (
+                    ports[pkey]["port"] == APPLE_SYNC_COMPANION_PORT and has_sync_port)
+                emit_port(ports[pkey], ip, hostnames.get(ip), baseline, change="new",
                           apple_sync=is_apple)
                 new_c += 1
-            for key in set(prev_ports) - set(ports):               # newly closed
-                proto, _, pnum = key.partition("/")
-                info = {"port": int(pnum), "proto": proto, "service": prev_ports[key], "banner": ""}
+            for pkey in set(prev_ports) - set(ports):               # newly closed
+                proto, _, pnum = pkey.partition("/")
+                info = {"port": int(pnum), "proto": proto, "service": prev_ports[pkey], "banner": ""}
                 emit_port(info, ip, hostnames.get(ip), baseline, change="closed")
                 closed_c += 1
-            new_state[ip] = {k: v["service"] for k, v in ports.items()}
+            new_state[key] = {"ip": ip, "ports": {k: v["service"] for k, v in ports.items()}}
 
         _save_state(diff_state, new_state)
     n += new_c

@@ -45,15 +45,14 @@ echo "[scheduled_scan] service scan XML: $SERVICES_XML"
 #    --baseline  : expected-open ports don't escalate to critical.
 #    --diff-state: change-detection — after the first (baseline) run, only alert
 #                  on ports that OPEN or CLOSE vs the previous scan (kills noise).
-#                  port_state_v2.json (not the old port_state.json): the state
-#                  is now keyed by MAC address instead of IP -- confirmed
-#                  2026-09-18, a DHCP lease renewal made a known device look
-#                  brand new (every normal port flagged "new") under the old
-#                  IP-keyed scheme. A new filename lets this cut over through
-#                  the existing "first run seeds the baseline quietly" path
-#                  instead of trying to reinterpret the old schema.
+#                  State is keyed by MAC address (falls back to IP when a host has
+#                  no MAC in the asset inventory), so a DHCP lease renewal no
+#                  longer makes a known device look new. Keep this filename: the
+#                  UDP state and the *_vulns state files live beside it, and
+#                  renaming only this one re-alerts every open port once
+#                  (confirmed 2026-09-18, 1041 false "NEW open port" alerts).
 python3 nmap_to_alerts.py "$SERVICES_XML" \
     --baseline 22,443 \
-    --diff-state /opt/sentinel-soc/data/port_state_v2.json
+    --diff-state /opt/sentinel-soc/data/port_state.json
 
 echo "[scheduled_scan] $(date -Is) done"

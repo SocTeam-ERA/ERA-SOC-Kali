@@ -42,6 +42,16 @@ from soc_core import Alert, emit_alert, diff_state_lock  # noqa: E402
 
 HIGH_RISK_PORTS = {21, 23, 135, 139, 445, 1433, 3306, 3389, 5432, 5900, 6379, 27017, 9200}
 
+# lockdownd (62078) is Apple's iOS device-sync/AFC service -- it's the
+# single most reliable fingerprint that a "new" tcpwrapped port is a
+# personal phone/tablet joining Wi-Fi, not a finding. 49152 alone is too
+# generic (it's the base of the OS ephemeral port range, used by lots of
+# unrelated things), so it's only treated the same way when it shows up
+# newly-opened on the SAME host in the SAME scan as 62078 -- confirmed
+# empirically these two always appear together for an iOS device.
+APPLE_SYNC_PORT = 62078
+APPLE_SYNC_COMPANION_PORT = 49152
+
 # These scripts stay completely silent unless they actually found something
 # (anonymous FTP that works, default credentials that log in, or a working
 # SNMP community string) -- so their mere presence in the XML is itself the
@@ -229,7 +239,8 @@ def parse_xml(path: Path):
     return current, hostnames, vulns
 
 
-def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | None):
+def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | None,
+              apple_sync: bool = False):
     pnum, proto = info["port"], info["proto"]
     sname, banner = info["service"], info["banner"]
     in_base = pnum in baseline
@@ -239,13 +250,28 @@ def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | Non
     # port suggests. This exact signal (an "irc?" match that nmap's own
     # irc-info script couldn't even talk to) is what led straight to a
     # suspected IoT botnet listener on 2026-09-11 — worth surfacing loudly.
-    unconfirmed = change != "closed" and info.get("method") == "table"
+    # apple_sync already gives a more specific, confident explanation than
+    # "unconfirmed" would -- tcpwrapped normally trips this flag, and we
+    # don't want "likely a phone joining the network" immediately followed
+    # by "unconfirmed service fingerprint, investigate directly".
+    unconfirmed = change != "closed" and info.get("method") == "table" and not apple_sync
     if change == "new":
-        sev = sev_for_new_port(pnum, in_base)
-        if unconfirmed:
-            sev = _escalate(sev)
+        if apple_sync:
+            # Confirmed 2026-09-18: this pair alone was 474 of kali_scan's
+            # historical alerts -- every phone joining a VLAN re-triggers it,
+            # not a security event.
+            sev = "normal"
+        else:
+            sev = sev_for_new_port(pnum, in_base)
+            if unconfirmed:
+                sev = _escalate(sev)
         title = f"NEW open port {pnum}/{proto} ({sname}) on {ip}"
+        if apple_sync:
+            title += " — likely a phone/tablet joining the network"
         desc = f"A port that was NOT open in the previous scan is now open: {pnum}/{proto} {sname} on {ip}"
+        if apple_sync:
+            desc += (". Port 62078 is Apple's iOS device-sync service (lockdownd) -- this pattern "
+                     "is almost always a personal phone/tablet joining Wi-Fi, not a finding")
     elif change == "closed":
         # A port closing isn't a security event -- it's usually just a
         # device going offline or a service restarting. Alerting on it
@@ -401,8 +427,16 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
         new_c = closed_c = 0
         for ip, ports in current.items():
             prev_ports = previous.get(ip, {})
-            for key in set(ports) - set(prev_ports):              # newly opened
-                emit_port(ports[key], ip, hostnames.get(ip), baseline, change="new")
+            new_keys = set(ports) - set(prev_ports)
+            # co-occurrence check across THIS host's newly-opened ports only --
+            # see APPLE_SYNC_PORT's comment above.
+            new_port_nums = {ports[k]["port"] for k in new_keys}
+            has_sync_port = APPLE_SYNC_PORT in new_port_nums
+            for key in new_keys:                                   # newly opened
+                is_apple = ports[key]["port"] == APPLE_SYNC_PORT or (
+                    ports[key]["port"] == APPLE_SYNC_COMPANION_PORT and has_sync_port)
+                emit_port(ports[key], ip, hostnames.get(ip), baseline, change="new",
+                          apple_sync=is_apple)
                 new_c += 1
             for key in set(prev_ports) - set(ports):               # newly closed
                 proto, _, pnum = key.partition("/")

@@ -24,7 +24,7 @@ Usage:
 """
 from __future__ import annotations
 import grp, json, os, shutil, subprocess, sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent))
@@ -194,6 +194,35 @@ def check_last_scan() -> None:
                     f"the scheduled job looks stalled")
 
 
+def check_suppressions() -> None:
+    import suppressions
+    rules, errors = suppressions.load_rules()
+    if not suppressions.CONFIG_FILE.exists():
+        check(OK, "no suppression file -- every alert is shown")
+        return
+    for err in errors:
+        check(FAIL if "cannot read rules" in err else WARN, f"suppressions: {err}")
+    expired = [r["id"] for r in rules if suppressions.is_expired(r)]
+    for rid in expired:
+        check(WARN, f"suppressions: rule {rid} has expired and no longer applies -- renew or remove it")
+    active = [r for r in rules if not suppressions.is_expired(r)]
+    if not errors and not expired:
+        check(OK, f"suppressions: {len(active)} active rule(s), file valid")
+    log = DATA_DIR / "alerts_suppressed.jsonl"
+    if active and log.exists():
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        hits: dict = {}
+        for line in log.read_text().splitlines():
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if rec.get("timestamp", "") >= cutoff:
+                hits[rec.get("suppressed_by")] = hits.get(rec.get("suppressed_by"), 0) + 1
+        for r in active:
+            check(OK, f"suppressions: {r['id']} hid {hits.get(r['id'], 0)} alert(s) in the last 24h")
+
+
 def main() -> int:
     print("=" * 72)
     print(" SENTINEL SOC -- pipeline health check")
@@ -206,6 +235,7 @@ def main() -> int:
         ("timers", check_timers),
         ("disk space", check_disk),
         ("last scheduled scan", check_last_scan),
+        ("suppression rules", check_suppressions),
     ]:
         print(f"\n-- {title} --")
         fn()

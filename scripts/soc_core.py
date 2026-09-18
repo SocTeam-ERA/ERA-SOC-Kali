@@ -47,6 +47,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 ALERTS_LOG = DATA_DIR / "alerts.jsonl"     # append-only history
 ALERTS_SNAPSHOT = DATA_DIR / "alerts.json"  # rolling feed for the dashboard
+SUPPRESSED_LOG = DATA_DIR / "alerts_suppressed.jsonl"  # alerts hidden by config/suppressions.json
 ALERTS_LOCK = DATA_DIR / ".alerts_snapshot.lock"  # serializes concurrent snapshot updates
 FAILED_OUTBOX = DATA_DIR / "ingest_outbox.jsonl"  # alerts that failed to reach the backend
 # Must be the same for every process: the snapshot is trimmed to this on each
@@ -609,6 +610,35 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
                 record.setdefault("details", {})["shodan"] = sho
         except Exception:
             pass
+
+    # 0d) MITRE ATT&CK tags under details["mitre"] (see mitre_tags.py). A
+    #     detector that already set its own tags keeps them.
+    try:
+        from mitre_tags import tag as _mitre_tag
+        details = record.setdefault("details", {})
+        if "mitre" not in details:
+            tags = _mitre_tag(record)
+            if tags:
+                details["mitre"] = tags
+    except Exception:
+        pass
+
+    # 0e) known-benign alerts declared in config/suppressions.json (see
+    #     suppressions.py). Kept out of the feed, the backend and ntfy, but
+    #     recorded in alerts_suppressed.jsonl. Fails open: any problem here
+    #     means the alert is emitted normally.
+    try:
+        from suppressions import find_match as _find_suppression
+        rule = _find_suppression(record)
+    except Exception:
+        rule = None
+    if rule:
+        record["suppressed_by"] = rule["id"]
+        with SUPPRESSED_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
+        if echo:
+            print(f"[{record['timestamp']}] SUPPRESSED by {rule['id']}: {record['title']}")
+        return record
 
     # 1) append-only audit log
     with ALERTS_LOG.open("a", encoding="utf-8") as fh:

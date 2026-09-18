@@ -76,7 +76,9 @@ cleanup_route() {
     CURRENT_ROUTE=""
   fi
 }
-trap cleanup_route EXIT
+# mark_scan_start (above) already owns the EXIT trap; replacing it outright
+# would leave scan_in_progress stuck forever, so chain both cleanups.
+trap 'cleanup_route; mark_scan_end' EXIT
 
 TOTAL=0
 REACHABLE=0
@@ -124,7 +126,7 @@ for src in "${VLANS[@]}"; do
   done
 done
 
-trap - EXIT
+trap mark_scan_end EXIT
 echo
 log "Tested $TOTAL cross-VLAN pair(s), $REACHABLE reachable (not isolated)."
 ok "Results: $RESULTS_FILE"

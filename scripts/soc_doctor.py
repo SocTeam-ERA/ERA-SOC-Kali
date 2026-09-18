@@ -115,6 +115,8 @@ def check_scan_marker() -> None:
         try:
             os.kill(pid, 0)
             alive.append(line)
+        except PermissionError:
+            alive.append(line)  # exists, but owned by root (scheduled scans)
         except OSError:
             stale.append(line)
     if stale:

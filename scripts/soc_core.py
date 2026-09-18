@@ -233,12 +233,38 @@ SCAN_LAST_ENDED_FILE = DATA_DIR / "scan_last_ended"
 SCAN_GRACE_SECONDS = 30
 
 
-def scan_active() -> bool:
+def _marker_has_live_entry() -> bool:
+    """True if the marker holds a line whose PID still exists. A line whose
+    process is gone means that scan died without running its EXIT trap;
+    ignoring it stops one broken script from silencing IDS alerts forever
+    (happened 2026-09-17/18). Unparseable lines count as live, as before."""
     try:
-        if SCAN_MARKER_FILE.stat().st_size > 0:
-            return True
+        text = SCAN_MARKER_FILE.read_text()
     except OSError:
-        pass
+        return False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            pid = int(line.split(":", 1)[0])
+        except ValueError:
+            return True
+        if pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            pass  # process exists but belongs to root (scheduled scans)
+        return True
+    return False
+
+
+def scan_active() -> bool:
+    if _marker_has_live_entry():
+        return True
     try:
         ended = datetime.fromisoformat(SCAN_LAST_ENDED_FILE.read_text().strip())
         return (datetime.now(timezone.utc) - ended).total_seconds() < SCAN_GRACE_SECONDS

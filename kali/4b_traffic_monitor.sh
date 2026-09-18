@@ -86,14 +86,14 @@ while true; do
   # window means its own probe/reply traffic could be in here -- skip
   # analysis rather than flag this box's own scan as an attack on itself.
   SCAN_WAS_ACTIVE=0
-  [[ -s "$SCAN_MARKER_FILE" ]] && SCAN_WAS_ACTIVE=1
+  if scan_marker_active; then SCAN_WAS_ACTIVE=1; fi
 
   # Capture the real packets for this window (not just extracted fields) --
   # this is what makes the Wireshark hand-off possible.
   tshark -i "$IFACE" -a "duration:$WINDOW" -w "$PCAP_TMP" 2>/dev/null \
       || warn "tshark window at $TS returned nonzero (continuing)"
 
-  [[ -s "$SCAN_MARKER_FILE" ]] && SCAN_WAS_ACTIVE=1
+  if scan_marker_active; then SCAN_WAS_ACTIVE=1; fi
 
   if [[ "$SCAN_WAS_ACTIVE" == "1" ]]; then
     log "An authorized scan was active during this window -- skipping traffic analysis."

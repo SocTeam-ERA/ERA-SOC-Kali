@@ -99,6 +99,21 @@ mark_scan_start() {
   trap mark_scan_end EXIT
 }
 
+# True (0) only if the marker has a line whose PID still exists in /proc; a
+# line left by a scan that died without its EXIT trap is ignored so it can't
+# suppress analysis forever. Mirrors soc_core.py's _marker_has_live_entry().
+scan_marker_active() {
+  local line pid
+  [[ -s "$SCAN_MARKER_FILE" ]] || return 1
+  while read -r line; do
+    [[ -n "$line" ]] || continue
+    pid="${line%%:*}"
+    [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+    [[ -d "/proc/$pid" ]] && return 0
+  done < "$SCAN_MARKER_FILE"
+  return 1
+}
+
 mark_scan_end() {
   [[ -f "$SCAN_MARKER_FILE" ]] || return 0
   # Locked read-modify-write: without this, two scans ending at nearly the

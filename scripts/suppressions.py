@@ -58,6 +58,9 @@ import alert_match  # noqa: E402
 CONFIG_FILE = Path(os.environ.get(
     "SOC_SUPPRESSIONS_FILE",
     Path(__file__).resolve().parent.parent / "config" / "suppressions.json"))
+_DATA_DIR = Path(os.environ.get("SOC_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
+# Rules created from the dashboard (suppression_admin.py) live here, not in git.
+DASHBOARD_FILE = _DATA_DIR / "suppressions_dashboard.json"
 
 _RULE_KEYS = {"id", "reason", "added_by", "added", "expires", "allow_critical", "match"}
 
@@ -98,35 +101,53 @@ def _compile(raw: Any, seen: set) -> Dict[str, Any]:
     return rule
 
 
-def load_rules(path: Optional[Path] = None) -> Tuple[List[Dict[str, Any]], List[str]]:
-    """Return (valid rules, error messages). Cached until the file changes."""
-    path = Path(path) if path else CONFIG_FILE
-    try:
-        st = path.stat()
-        sig = (str(path), st.st_mtime_ns, st.st_size)
-    except OSError:
-        return [], []
-    if _cache["sig"] == sig:
-        return _cache["rules"], _cache["errors"]
-
+def _load_file(path: Path, source: str, seen: set) -> Tuple[List[Dict[str, Any]], List[str]]:
     rules: List[Dict[str, Any]] = []
     errors: List[str] = []
+    if not path.exists():
+        return rules, errors
     try:
         data = json.loads(path.read_text())
         raw_rules = data["rules"]
         if not isinstance(raw_rules, list):
             raise ValueError("'rules' must be a list")
     except (OSError, ValueError, KeyError, TypeError) as e:
-        errors.append(f"{path.name}: cannot read rules ({e}) -- nothing is being suppressed")
-        raw_rules = []
-    seen: set = set()
+        return rules, [f"{path.name}: cannot read rules ({e}) -- nothing from this file is being suppressed"]
     for i, raw in enumerate(raw_rules):
         label = raw.get("id", f"#{i + 1}") if isinstance(raw, dict) else f"#{i + 1}"
         try:
-            rules.append(_compile(raw, seen))
-            seen.add(rules[-1]["id"])
+            rule = _compile(raw, seen)
+            rule["source"] = source
+            rules.append(rule)
+            seen.add(rule["id"])
         except ValueError as e:
             errors.append(f"rule {label}: {e} -- ignored")
+    return rules, errors
+
+
+def load_rules(path: Optional[Path] = None) -> Tuple[List[Dict[str, Any]], List[str]]:
+    """Return (valid rules, error messages) from the versioned config file and the
+    dashboard file. Cached until either file changes. Pass `path` to read just one file."""
+    files = [(Path(path), "config")] if path else [(CONFIG_FILE, "config"), (DASHBOARD_FILE, "dashboard")]
+    sig = []
+    for f, _ in files:
+        try:
+            st = f.stat()
+            sig.append((str(f), st.st_mtime_ns, st.st_size))
+        except OSError:
+            sig.append((str(f), None, None))
+    sig = tuple(sig)
+    if all(x[1] is None for x in sig):
+        return [], []
+    if _cache["sig"] == sig:
+        return _cache["rules"], _cache["errors"]
+    rules: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    seen: set = set()
+    for f, source in files:
+        r, e = _load_file(f, source, seen)
+        rules += r
+        errors += e
     _cache.update(sig=sig, rules=rules, errors=errors)
     for msg in errors:
         print(f"[suppressions] WARNING {msg}", file=sys.stderr)

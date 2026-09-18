@@ -42,6 +42,19 @@ from soc_core import Alert, emit_alert, diff_state_lock, load_assets  # noqa: E4
 
 HIGH_RISK_PORTS = {21, 23, 135, 139, 445, 1433, 3306, 3389, 5432, 5900, 6379, 27017, 9200}
 
+# A single scan run finding more "new" ports than this is far more likely to
+# be a one-time settling event (a detection-logic change like switching to
+# MAC-based device keys, or a genuine network-wide change) than 30+
+# independent findings someone should triage one row at a time. Confirmed
+# 2026-09-18: switching device_key() from IP to MAC alone produced 600 "new"
+# alerts across 201 hosts in a single run, since every host's tracking key
+# changed at once -- correct detection, but flooding the feed with 600 rows
+# for what is really one event defeats the point of fixing alert noise
+# elsewhere in this project. Above this threshold, emit one summary alert
+# with the full list in `details` instead of one alert per port; at or below
+# it, each finding is still worth its own row (existing behavior, unchanged).
+PORT_BULK_ALERT_THRESHOLD = int(os.environ.get("SOC_PORT_BULK_THRESHOLD", "30"))
+
 # lockdownd (62078) is Apple's iOS device-sync/AFC service -- it's the
 # single most reliable fingerprint that a "new" tcpwrapped port is a
 # personal phone/tablet joining Wi-Fi, not a finding. 49152 alone is too
@@ -469,6 +482,7 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
         # change, never assumes continuity it can't verify.
         new_state = dict(previous)
         new_c = closed_c = 0
+        new_events = []  # (info, ip, hostname, is_apple) -- decide bulk vs. per-row after the loop
         for ip, ports in current.items():
             key = device_key(ip, ip_to_mac)
             prev_entry = previous.get(key, {})
@@ -481,8 +495,7 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
             for pkey in new_keys:                                  # newly opened
                 is_apple = ports[pkey]["port"] == APPLE_SYNC_PORT or (
                     ports[pkey]["port"] == APPLE_SYNC_COMPANION_PORT and has_sync_port)
-                emit_port(ports[pkey], ip, hostnames.get(ip), baseline, change="new",
-                          apple_sync=is_apple)
+                new_events.append((ports[pkey], ip, hostnames.get(ip), is_apple))
                 new_c += 1
             for pkey in set(prev_ports) - set(ports):               # newly closed
                 proto, _, pnum = pkey.partition("/")
@@ -492,9 +505,31 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
             new_state[key] = {"ip": ip, "ports": {k: v["service"] for k, v in ports.items()}}
 
         _save_state(diff_state, new_state)
+
+        if new_c > PORT_BULK_ALERT_THRESHOLD:
+            hosts_affected = len({ip for _, ip, _, _ in new_events})
+            emit_alert(Alert(
+                type="port_scan", severity="medium",
+                title=f"Bulk port change: {new_c} new open port(s) across {hosts_affected} host(s) in one scan",
+                detector="kali_scan",
+                description=(f"{new_c} newly-open ports were detected across {hosts_affected} hosts in a "
+                             f"single scan pass -- collapsed into this one alert instead of {new_c} separate "
+                             "rows. Usually a one-time settling event (e.g. a detection-logic change like "
+                             "switching how devices are tracked) or a genuine broad network change, not "
+                             f"{new_c} independent findings. Full per-port list in details."),
+                details={"count": new_c, "hosts": hosts_affected, "change": "bulk_new",
+                         "findings": [{"ip": ip, "hostname": hn, "port": info["port"], "proto": info["proto"],
+                                       "service": info["service"], "apple_sync": is_apple}
+                                      for info, ip, hn, is_apple in new_events]},
+            ))
+        else:
+            for info, ip, hn, is_apple in new_events:
+                emit_port(info, ip, hn, baseline, change="new", apple_sync=is_apple)
+
     n += new_c
-    print(f"[*] Change detection: {new_c} new port alert(s), {closed_c} port(s) closed "
-          f"(logged, not alerted) + {vuln_n} vuln alert(s). ({n} total into the SOC feed.)")
+    print(f"[*] Change detection: {new_c} new port alert(s) "
+          f"({'1 bulk summary' if new_c > PORT_BULK_ALERT_THRESHOLD else f'{new_c} individual'}), "
+          f"{closed_c} port(s) closed (logged, not alerted) + {vuln_n} vuln alert(s). ({n} total into the SOC feed.)")
     return 0
 
 

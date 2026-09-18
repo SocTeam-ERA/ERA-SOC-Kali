@@ -49,7 +49,10 @@ ALERTS_LOG = DATA_DIR / "alerts.jsonl"     # append-only history
 ALERTS_SNAPSHOT = DATA_DIR / "alerts.json"  # rolling feed for the dashboard
 ALERTS_LOCK = DATA_DIR / ".alerts_snapshot.lock"  # serializes concurrent snapshot updates
 FAILED_OUTBOX = DATA_DIR / "ingest_outbox.jsonl"  # alerts that failed to reach the backend
-MAX_SNAPSHOT = int(os.environ.get("SOC_MAX_SNAPSHOT", "500"))
+# Must be the same for every process: the snapshot is trimmed to this on each
+# emit_alert(), so if some services used a smaller cap, their next alert would
+# cut off whatever a scan burst had just added (happened 2026-09-18, 500 vs 5000).
+MAX_SNAPSHOT = int(os.environ.get("SOC_MAX_SNAPSHOT", "5000"))
 
 # --------------------------------------------------------------------------- #
 #  Backend forwarder (send alerts to the Sentinel SOC backend / SIEM)
@@ -680,7 +683,7 @@ def set_alert_status(alert_id: str, status: str, note: str = "", actor: str = ""
     found something".
 
     Note the live snapshot only holds the most recent MAX_SNAPSHOT alerts
-    (default 500) -- an alert that has rolled off the snapshot can't have
+    (default 5000) -- an alert that has rolled off the snapshot can't have
     its status changed here; its original record is still in alerts.jsonl,
     just no longer part of the mutable "current" view this manages.
 

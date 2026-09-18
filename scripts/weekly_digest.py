@@ -61,7 +61,7 @@ def _save_digest_state(now_iso: str) -> None:
 
 
 def _read_since(cutoff_iso: str) -> list[dict]:
-    """Read alerts.jsonl directly (not the 500-cap snapshot) so a week's
+    """Read alerts.jsonl directly (not the capped snapshot) so a week's
     worth of alerts can't get silently truncated the way the live
     dashboard view is allowed to."""
     out = []
@@ -143,7 +143,7 @@ def build_digest(cutoff_iso: str, now_iso: str) -> str:
         for a in genuine_new[:10]:
             lines.append(f"    {a.get('timestamp','')[:19]}  {a.get('source_ip') or '-':<15}  {a.get('title','')}")
 
-    lines.append("\n-- Current live feed snapshot (most recent 500 alerts) --")
+    lines.append("\n-- Current live feed snapshot (most recent alerts, capped) --")
     lines.append(f"  total: {live_summary['total']}")
     lines.append(f"  by severity: {live_summary['by_severity']}")
     lines.append(f"  by status:   {live_summary['by_status']}")

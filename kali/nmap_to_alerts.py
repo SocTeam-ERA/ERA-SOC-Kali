@@ -253,7 +253,7 @@ def parse_xml(path: Path):
 
 
 def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | None,
-              apple_sync: bool = False):
+              apple_sync: bool = False, escalate_unconfirmed: bool = True):
     pnum, proto = info["port"], info["proto"]
     sname, banner = info["service"], info["banner"]
     in_base = pnum in baseline
@@ -267,6 +267,13 @@ def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | Non
     # "unconfirmed" would -- tcpwrapped normally trips this flag, and we
     # don't want "likely a phone joining the network" immediately followed
     # by "unconfirmed service fingerprint, investigate directly".
+    #
+    # Raising the severity for every such port was too loud (2026-09-21: a Dell iDRAC's
+    # VNC-over-TLS, a NETGEAR's 4242, an IP phone's SIP-TLS all became critical). The
+    # signal that matters is an ESTABLISHED device suddenly opening a listener it never
+    # had, so run() only asks for the escalation in that case (escalate_unconfirmed).
+    # A brand-new device already has its own new-device alert, and a port the device has
+    # shown before is a flapping scan result, not a new listener.
     unconfirmed = change != "closed" and info.get("method") == "table" and not apple_sync
     if change == "new":
         if apple_sync:
@@ -276,7 +283,7 @@ def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | Non
             sev = "normal"
         else:
             sev = sev_for_new_port(pnum, in_base)
-            if unconfirmed:
+            if unconfirmed and escalate_unconfirmed:
                 sev = _escalate(sev)
         title = f"NEW open port {pnum}/{proto} ({sname}) on {ip}"
         if apple_sync:
@@ -306,7 +313,9 @@ def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | Non
         desc += f" running {banner}"
     if unconfirmed:
         desc += (". Nmap could not confirm this service via protocol probing and fell back to "
-                 "a port-number guess — the service name may be wrong; investigate directly")
+                 "a port-number guess — the service name may be wrong")
+        desc += ("; investigate directly" if escalate_unconfirmed else
+                 " (severity not raised: this device is newly seen, or has shown this port before)")
     emit_alert(Alert(
         type="port_scan", severity=sev, title=title,
         source_ip=ip, hostname=hostname, detector="kali_scan",
@@ -314,7 +323,8 @@ def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | Non
         details={"port": pnum, "proto": proto, "service": sname, "banner": banner,
                  "in_baseline": in_base, "change": change or "present",
                  "service_method": info.get("method") or "unknown",
-                 "service_conf": info.get("conf"), "unconfirmed_fingerprint": unconfirmed},
+                 "service_conf": info.get("conf"), "unconfirmed_fingerprint": unconfirmed,
+                 "unconfirmed_escalated": bool(unconfirmed and escalate_unconfirmed)},
     ))
 
 
@@ -537,7 +547,7 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
         new_state = dict(previous)
         now = datetime.now(timezone.utc)
         new_c = closed_c = reappeared_c = 0
-        new_events = []  # (info, ip, hostname, is_apple) -- decide bulk vs. per-row after the loop
+        new_events = []  # (info, ip, hostname, is_apple, escalate) -- decide bulk vs. per-row after the loop
         for ip, ports in current.items():
             key = device_key(ip, ip_to_mac)
             prev_entry = previous.get(key, {})
@@ -553,10 +563,12 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
             # see APPLE_SYNC_PORT's comment above.
             new_port_nums = {ports[k]["port"] for k in new_keys}
             has_sync_port = APPLE_SYNC_PORT in new_port_nums
+            established = bool(prev_entry)                          # host was in the previous state
             for pkey in new_keys:                                  # newly opened
                 is_apple = ports[pkey]["port"] == APPLE_SYNC_PORT or (
                     ports[pkey]["port"] == APPLE_SYNC_COMPANION_PORT and has_sync_port)
-                new_events.append((ports[pkey], ip, hostnames.get(ip), is_apple))
+                escalate = established and pkey not in prev_seen
+                new_events.append((ports[pkey], ip, hostnames.get(ip), is_apple, escalate))
                 new_c += 1
             for pkey in set(prev_ports) - set(ports):               # newly closed
                 proto, _, pnum = pkey.partition("/")
@@ -569,7 +581,7 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
         _save_state(diff_state, new_state)
 
         if new_c > PORT_BULK_ALERT_THRESHOLD:
-            hosts_affected = len({ip for _, ip, _, _ in new_events})
+            hosts_affected = len({ip for _, ip, _, _, _ in new_events})
             emit_alert(Alert(
                 type="port_scan", severity="medium",
                 title=f"Bulk port change: {new_c} new open port(s) across {hosts_affected} host(s) in one scan",
@@ -582,11 +594,11 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
                 details={"count": new_c, "hosts": hosts_affected, "change": "bulk_new",
                          "findings": [{"ip": ip, "hostname": hn, "port": info["port"], "proto": info["proto"],
                                        "service": info["service"], "apple_sync": is_apple}
-                                      for info, ip, hn, is_apple in new_events]},
+                                      for info, ip, hn, is_apple, _esc in new_events]},
             ))
         else:
-            for info, ip, hn, is_apple in new_events:
-                emit_port(info, ip, hn, baseline, change="new", apple_sync=is_apple)
+            for info, ip, hn, is_apple, esc in new_events:
+                emit_port(info, ip, hn, baseline, change="new", apple_sync=is_apple, escalate_unconfirmed=esc)
 
     n += new_c
     print(f"[*] Change detection: {new_c} new port alert(s) "

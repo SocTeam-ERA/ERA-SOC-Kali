@@ -11,7 +11,9 @@ Three parts:
      checked. It all runs in a throwaway data directory with notifications and the backend
      forwarder switched off, so nothing reaches the dashboard or anyone's phone.
      Then the platform layers on top: MITRE tags, entities, batches, threat intel,
-     correlation into an incident, and suppression.
+     correlation into an incident, and suppression; and the analyst-facing layers: alert
+     aging, search, incident lifecycle, suppressions created from the dashboard, playbooks,
+     the backup script, and an isolated API server exercised with read and write keys.
 
   2. LIVE (read-only). Services and timers active, the API answering with a real key, the
      data sources healthy, the backup and threat-intel feeds fresh, the config files valid,
@@ -227,13 +229,13 @@ def inner() -> int:
     n = len(feed())
     (tmp / "scan2.xml").write_text(xml([(22, "ssh"), (8080, "http")])); N.run(tmp / "scan2.xml", {22}, st)
     a = find(new_alerts(n), "NEW open port 8080/tcp")
-    check("a port that opened between two scans raises an alert", a is not None and a["severity"] == "medium")
+    check("a port that opened between two scans raises an alert (normal: a new ordinary port is information)", a is not None and a["severity"] == "normal")
     n = len(feed()); N.run(tmp / "scan2.xml", {22}, st)
     check("the same scan again raises nothing (change detection)", len(new_alerts(n)) == 0)
     n = len(feed())
     (tmp / "scan3.xml").write_text(xml([(22, "ssh"), (8080, "http"), (3389, "ms-wbt-server")])); N.run(tmp / "scan3.xml", {22}, st)
     a = find(new_alerts(n), "NEW open port 3389/tcp")
-    check("a new RDP port is critical and tagged T1021.001", a is not None and a["severity"] == "critical" and "T1021.001" in tags(a))
+    check("a new RDP port on a known device is medium and tagged T1021.001", a is not None and a["severity"] == "medium" and "T1021.001" in tags(a))
 
     # ---- malware / phishing --------------------------------------------------
     group("malware")
@@ -276,6 +278,154 @@ def inner() -> int:
     r1 = emit_alert(Alert(type="intrusion", severity="medium", title="please hide me", detector="selftest_suppressed"), echo=False)
     r2 = emit_alert(Alert(type="intrusion", severity="medium", title="but not this", detector="selftest_suppressed"), echo=False)
     check("a matching suppression rule hides an alert, others pass", r1.get("suppressed_by") == "selftest-rule" and "suppressed_by" not in r2)
+
+    # ---- (added) alert aging --------------------------------------------------
+    group("aging")
+    import alert_aging
+    from datetime import timedelta
+
+    def _ago(days):
+        return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    old_port = emit_alert(Alert(type="port_scan", severity="medium", title="NEW open port 80/tcp (http) on 10.0.0.1",
+                                detector="kali_scan", timestamp=_ago(6)), echo=False)
+    old_crit = emit_alert(Alert(type="port_scan", severity="critical", title="NEW open port 3389/tcp on 10.0.0.2",
+                                detector="kali_scan", timestamp=_ago(9)), echo=False)
+    old_vuln = emit_alert(Alert(type="vuln", severity="medium", title="Weak TLS on 10.0.0.5:443 (ssl-cert): certificate EXPIRED",
+                                detector="kali_scan", timestamp=_ago(6)), echo=False)
+    new_port = emit_alert(Alert(type="port_scan", severity="medium", title="NEW open port 81/tcp on 10.0.0.3",
+                                detector="kali_scan", timestamp=_ago(1)), echo=False)
+    alert_aging.run()
+    st = {a["id"]: a["status"] for a in feed()}
+    check("a 6-day-old informational port alert is closed automatically", st.get(old_port["id"]) == "resolved")
+    check("an old CRITICAL alert is left open", st.get(old_crit["id"]) == "open")
+    check("an old vulnerability finding is left open", st.get(old_vuln["id"]) == "open")
+    check("a recent port alert is left open", st.get(new_port["id"]) == "open")
+
+    # ---- (added) search -------------------------------------------------------
+    group("search")
+    import log_search
+    res = log_search.search("alerts", "batch probe", "1h", 10, 5)
+    check("a text search finds alerts in the history", res["count"] >= 1, str(res["count"]))
+    res = log_search.search("alerts", "detector:kali_scan ip:10.0.0.0/8", "1h", 50, 5)
+    check("a field + network query finds the port alerts", res["count"] >= 1, str(res["count"]))
+
+    def _refused(fn):
+        try:
+            fn()
+        except ValueError:
+            return True
+        return False
+    check("a path-traversal source is refused", _refused(lambda: log_search.search("zeek:../../etc/passwd", "x")))
+    check("an empty query is refused", _refused(lambda: log_search.search("alerts", "")))
+
+    # ---- (added) incidents ----------------------------------------------------
+    group("incidents")
+    incs = correlate.list_incidents()
+    inc_id = incs[0]["id"] if incs else None
+    check("an incident exists to work with", inc_id is not None)
+    if inc_id:
+        check("closing an incident without a classification is refused",
+              _refused(lambda: correlate.update_incident(inc_id, "selftest", status="closed")))
+        upd = correlate.update_incident(inc_id, "selftest", status="closed", classification="benign", comment="self-test")
+        check("it closes with a classification and keeps the comment", upd["status"] == "closed" and len(upd["comments"]) == 1)
+        check("the change is attributed to who made it", upd["comments"][0]["by"] == "selftest")
+
+    # ---- (added) suppressions created from the dashboard ------------------------
+    group("dashboard suppressions")
+    import suppression_admin
+    tgt = emit_alert(Alert(type="port_scan", severity="medium", title="NEW open port 62078/tcp (tcpwrapped) on 10.1.1.10",
+                           detector="kali_scan", source_ip="10.1.1.10", details={"port": 62078, "proto": "tcp"}), echo=False)
+    other = emit_alert(Alert(type="port_scan", severity="medium", title="NEW open port 3389/tcp (ms-wbt-server) on 10.1.1.10",
+                             detector="kali_scan", source_ip="10.1.1.10", details={"port": 3389, "proto": "tcp"}), echo=False)
+    crit = emit_alert(Alert(type="intrusion", severity="critical", title="Something critical", detector="suricata",
+                            source_ip="9.9.9.9"), echo=False)
+    rule = suppression_admin.create_rule("selftest", "known benign Apple sync port", alert_id=tgt["id"], scope="similar")["rule"]
+    check("a rule can be created from an alert (it always expires)", bool(rule["expires"]) and rule["added_by"] == "selftest")
+    again = emit_alert(Alert(type="port_scan", severity="medium", title="NEW open port 62078/tcp (tcpwrapped) on 10.9.9.9",
+                             detector="kali_scan", source_ip="10.9.9.9", details={"port": 62078, "proto": "tcp"}), echo=False)
+    check("the same port on another host is now suppressed", again.get("suppressed_by") == rule["id"])
+    other2 = emit_alert(Alert(type="port_scan", severity="medium", title="NEW open port 3389/tcp (ms-wbt-server) on 10.9.9.9",
+                              detector="kali_scan", source_ip="10.9.9.9", details={"port": 3389, "proto": "tcp"}), echo=False)
+    check("a different port (RDP) is NOT suppressed", not other2.get("suppressed_by"))
+    check("critical alerts cannot be suppressed from the dashboard",
+          _refused(lambda: suppression_admin.create_rule("selftest", "should be refused", alert_id=crit["id"])))
+    check("a client-supplied regular expression is refused",
+          _refused(lambda: suppression_admin.create_rule("selftest", "should be refused",
+                                                          match={"detector": "aide", "title_regex": ".*"})))
+    suppression_admin.delete_rule(rule["id"], "selftest")
+    back = emit_alert(Alert(type="port_scan", severity="medium", title="NEW open port 62078/tcp (tcpwrapped) on 10.8.8.8",
+                            detector="kali_scan", source_ip="10.8.8.8", details={"port": 62078, "proto": "tcp"}), echo=False)
+    check("after deleting the rule the alert is shown again", not back.get("suppressed_by"))
+
+    # ---- (added) playbooks ----------------------------------------------------
+    group("playbooks")
+    import playbooks
+    ov = playbooks.overview()
+    check("the playbook file is valid", not ov["errors"] and len(ov["playbooks"]) >= 1)
+    check("the shipped playbooks are all disabled", not any(p["enabled"] for p in ov["playbooks"]))
+    check("an incident alert triggers no action while disabled",
+          playbooks.run_for_alert({"detector": "correlation", "severity": "critical", "title": "Incident #1",
+                                   "details": {"incident_id": "x"}}) == [])
+
+    # ---- (added) backup -------------------------------------------------------
+    group("backup")
+    bk = tmp / "bk"
+    bp = subprocess.run(["bash", str(KALI / "backup_data.sh")], capture_output=True, text=True, timeout=120,
+                        env=dict(os.environ, SOC_BACKUP_DIR=str(bk), SOC_DATA_DIR=str(tmp)))
+    arch = sorted(bk.glob("soc-backup-*.tar.gz"))
+    check("the backup script runs and writes an archive", bp.returncode == 0 and bool(arch), bp.stderr[-120:])
+    if arch:
+        names = subprocess.run(["tar", "-tzf", str(arch[-1])], capture_output=True, text=True).stdout
+        check("the archive has the alerts and config but NOT the API keys",
+              "data/alerts.json" in names and "config/" in names and "api_keys" not in names)
+
+    # ---- (added) API server with read and write keys ------------------------------
+    group("api")
+    import socket
+    import urllib.error
+    (tmp / "api_keys.json").write_text(json.dumps({"keys": [{"token": "t-read", "user": "reader", "role": "read"},
+                                                             {"token": "t-write", "user": "writer", "role": "write"}]}))
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        port = sk.getsockname()[1]
+    proc = subprocess.Popen([sys.executable, str(SCRIPTS / "soc_api.py")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            env=dict(os.environ, SOC_API_HOST="127.0.0.1", SOC_API_PORT=str(port)))
+
+    def _call(path, token="t-read", method="GET", body=None):
+        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method,
+                                     data=json.dumps(body).encode() if body is not None else None,
+                                     headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"} if token else {})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return r.status, json.load(r)
+        except urllib.error.HTTPError as e:
+            return e.code, None
+    try:
+        for _ in range(40):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=1)
+                break
+            except OSError:
+                time.sleep(0.25)
+        check("the API answers health without a key", _call("/api/health", None)[0] == 200)
+        check("the API refuses a request without a key", _call("/api/alerts", None)[0] == 401)
+        code, d = _call("/api/alerts?limit=5")
+        check("the alerts endpoint serves the feed", code == 200 and d["count"] >= 1)
+        check("incidents, entities, metrics, sources, detections and playbooks answer",
+              all(_call(p)[0] == 200 for p in ("/api/incidents", "/api/entities", "/api/metrics", "/api/sources",
+                                               "/api/detections", "/api/playbooks", "/api/suppressions")))
+        check("a search through the API works", _call("/api/search?source=alerts&q=batch&since=1h")[0] == 200)
+        check("a path-traversal search source is rejected", _call("/api/search?source=zeek:../../etc/passwd&q=x")[0] == 400)
+        check("a read-only key cannot change an incident", _call(f"/api/incidents/{inc_id}", "t-read", "POST", {"comment": "x"})[0] == 403)
+        code, d = _call(f"/api/incidents/{inc_id}", "t-write", "POST", {"comment": "through the API"})
+        check("a write key can comment, attributed to its user", code == 200 and d["comments"][-1]["by"] == "writer")
+        check("a read-only key cannot create a suppression", _call("/api/suppressions", "t-read", "POST", {"reason": "x"})[0] == 403)
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
 
     print(json.dumps([{"name": n_, "ok": ok_, "detail": d} for n_, ok_, d in results]))
     return 0

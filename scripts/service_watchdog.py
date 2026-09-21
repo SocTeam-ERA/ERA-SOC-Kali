@@ -116,6 +116,13 @@ def run() -> int:
         source_health.run()
     except Exception as e:
         print(f"[watchdog] source health check failed: {e}", file=sys.stderr)
+
+    # Close informational change alerts nobody reviewed (acts at most every 6 hours).
+    try:
+        import alert_aging
+        alert_aging.run_if_due()
+    except Exception as e:
+        print(f"[watchdog] alert aging failed: {e}", file=sys.stderr)
     return 0
 
 

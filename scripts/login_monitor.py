@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
+import os
 import re
 import sys
 import time
@@ -113,6 +114,14 @@ def load_known_ips(path: str | None):
     return nets
 
 
+# One "Login from NEW IP" alert per (ip, user) per this many seconds: an admin working from
+# an address that is not in known_ips.txt logs in many times a day, and each login was its own
+# alert (2026-09-21: the same IP three times in two hours). Failures and brute-force patterns
+# are not affected. In memory, so a service restart re-alerts once.
+NEW_IP_COOLDOWN = float(os.environ.get("SOC_NEW_IP_COOLDOWN", str(24 * 3600)))
+_new_ip_last: dict = {}
+
+
 def handle_event(kind: str, user: str, ip: str, host: str | None,
                  tracker: BruteForceTracker, known) -> None:
     """kind in {failed, accepted, invalid}."""
@@ -159,7 +168,10 @@ def handle_event(kind: str, user: str, ip: str, host: str | None,
                             f"failed attempts. Classic brute-force-succeeded pattern.",
                 details={"prior_failures": recent, "known_ip": known_ip},
             ))
+        elif not known_ip and now - _new_ip_last.get((ip, user), 0) < NEW_IP_COOLDOWN:
+            print(f"[*] repeat login from new IP {ip} (user '{user}') within the cooldown -- not re-alerted")
         elif not known_ip:
+            _new_ip_last[(ip, user)] = now
             emit_alert(Alert(
                 type="intrusion", severity="critical" if is_admin else "medium",
                 title=f"Login from NEW IP {ip} (user '{user}')",

@@ -35,7 +35,8 @@ from soc_core import Alert, DATA_DIR, emit_alert  # noqa: E402
 STATE_FILE = DATA_DIR / "source_health.json"
 
 # kind: file  = newest write to `path`;  timer = last time a systemd timer fired;
-#       meta  = when the threat-intel feeds were last downloaded.
+#       meta  = when the threat-intel feeds were last downloaded;
+#       backup = the last successful run of kali/backup_data.sh.
 SOURCES: List[Dict[str, Any]] = [
     {"id": "suricata", "name": "Suricata IDS log", "kind": "file",
      "path": "/var/log/suricata/eve.json", "max_age_min": 10},
@@ -50,6 +51,7 @@ SOURCES: List[Dict[str, Any]] = [
     {"id": "vlan", "name": "VLAN segmentation test", "kind": "timer",
      "unit": "soc-vlan-segmentation.timer", "max_age_min": 26 * 60},
     {"id": "threat_intel", "name": "Threat-intel feeds", "kind": "meta", "max_age_min": 72 * 60},
+    {"id": "backup", "name": "SOC data backup", "kind": "backup", "max_age_min": 26 * 60},
 ]
 
 
@@ -67,6 +69,11 @@ def _last_event(src: Dict[str, Any]) -> Optional[float]:
                                   "--timestamp=unix", "--value"], capture_output=True, text=True, timeout=10).stdout.strip()
             return float(out.lstrip("@")) if out.startswith("@") and float(out.lstrip("@")) > 0 else None
         except (OSError, ValueError, subprocess.SubprocessError):
+            return None
+    if kind == "backup":
+        try:
+            return datetime.fromisoformat(json.loads((DATA_DIR / "backup_status.json").read_text())["last_ok"]).timestamp()
+        except (OSError, ValueError, KeyError):
             return None
     if kind == "meta":
         try:

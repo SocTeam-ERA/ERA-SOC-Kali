@@ -248,6 +248,34 @@ def check_platform() -> None:
             check(WARN, f"playbooks: {p['id']} had {p['errors_24h']} failed action(s) in the last 24h "
                         "(python3 scripts/playbooks.py --runs)")
 
+    import alert_aging
+    _rules, aging_errors = alert_aging.load_rules()
+    for err in aging_errors:
+        check(WARN, f"alert aging: {err}")
+    if not aging_errors:
+        check(OK, f"alert aging: {len(_rules)} rule(s), file valid")
+    try:
+        bk = json.loads((DATA_DIR / "backup_status.json").read_text())
+        age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(bk["last_ok"])).total_seconds() / 3600
+        check(OK if age_h <= 26 and bk.get("last_result") == "ok" else WARN,
+              f"backup: last success {age_h:.0f}h ago, remote copy: {bk.get('remote', 'none')}"
+              + ("" if bk.get("remote") == "ok" else " (only a local copy: set SOC_BACKUP_REMOTE)")
+              + ("" if bk.get("last_result") == "ok" else f" -- last run FAILED: {bk.get('message')}"))
+    except (OSError, ValueError, KeyError):
+        check(WARN, "backup: no successful backup recorded -- run kali/backup_data.sh")
+    try:
+        st = json.loads((DATA_DIR / "selftest_last.json").read_text())
+        age_h = (datetime.now(timezone.utc) - datetime.fromisoformat(st["at"])).total_seconds() / 3600
+        if st["failed"]:
+            check(WARN, f"self-test: {st['failed']} check(s) failed in the last run: "
+                        + "; ".join(f["name"] for f in st["failures"][:3]))
+        elif age_h > 48:
+            check(WARN, f"self-test: last run {age_h:.0f}h ago (it is scheduled daily at 06:30)")
+        else:
+            check(OK, f"self-test: {st['passed']} checks passed, last run {age_h:.0f}h ago")
+    except (OSError, ValueError, KeyError):
+        check(WARN, "self-test: never run -- python3 scripts/soc_selftest.py --live")
+
     meta = threat_intel._load_meta()
     for feed in ("kev", "feodo"):
         m = meta.get(feed)

@@ -1133,19 +1133,47 @@ def _cli() -> int:
     ap.add_argument("--test-ingest", action="store_true",
                     help="Send ONE test alert to the configured backend and report the result")
     ap.add_argument("--test-alert", action="store_true",
-                    help="Emit ONE alert marked test:true through the normal pipeline "
-                         "(local files + backend if configured); it must show only in the dashboard's Test tab")
+                    help="Emit alert(s) marked test:true through the normal pipeline "
+                         "(local files + backend if configured); they must show only in the dashboard's Test tab. "
+                         "Tune with --severity --type --title --source-ip --detector --details --count, "
+                         "or send one of each type and severity with --matrix")
+    ap.add_argument("--severity", choices=SEVERITIES, default="critical", help="with --test-alert (default critical)")
+    ap.add_argument("--type", dest="alert_type", choices=ALERT_TYPES, default="intrusion",
+                    help="with --test-alert (default intrusion)")
+    ap.add_argument("--title", default="Test alert (test: true) — safe to ignore", help="with --test-alert")
+    ap.add_argument("--source-ip", default="8.8.8.8",
+                    help="with --test-alert (default 8.8.8.8, a public IP so the anonymizer enrichment shows)")
+    ap.add_argument("--detector", default="manual_test", help="with --test-alert: the source_name (default manual_test)")
+    ap.add_argument("--details", default="", help='with --test-alert: extra details as a JSON object, e.g. \'{"port": 22}\'')
+    ap.add_argument("--count", type=int, default=1, help="with --test-alert: send N alerts (titles get ' (i of N)')")
+    ap.add_argument("--matrix", action="store_true",
+                    help="with --test-alert: one alert for every type x severity (%d alerts)" % (len(ALERT_TYPES) * len(SEVERITIES)))
     ap.add_argument("--replay", action="store_true",
                     help="Resend any alerts queued in the outbox (run from cron)")
     ap.add_argument("--status", action="store_true", help="Show config + counts")
     args = ap.parse_args()
 
     if args.test_alert:
-        # 8.8.8.8 is a public address on purpose: it also exercises the anonymizer enrichment.
-        emit_alert(Alert(type="intrusion", severity="critical", detector="manual_test",
-                         title="Test alert (test: true) — safe to ignore", source_ip="8.8.8.8",
-                         description="Sent by soc_core.py --test-alert. It must appear only in the Test tab, "
-                                     "open no incident and send no push notification.", test=True))
+        try:
+            extra = json.loads(args.details) if args.details else {}
+            if not isinstance(extra, dict):
+                raise ValueError("must be a JSON object")
+        except ValueError as e:
+            print(f"[!] --details is not valid JSON: {e}")
+            return 1
+        combos = ([(t, sv) for t in ALERT_TYPES for sv in SEVERITIES] if args.matrix
+                  else [(args.alert_type, args.severity)] * max(1, min(args.count, 200)))
+        for i, (atype, sev) in enumerate(combos, 1):
+            title = args.title
+            if args.matrix:
+                title = f"{args.title} [{atype}/{sev}]"
+            elif len(combos) > 1:
+                title = f"{args.title} ({i} of {len(combos)})"
+            emit_alert(Alert(type=atype, severity=sev, detector=args.detector, title=title,
+                             source_ip=args.source_ip or None, details=dict(extra), test=True,
+                             description="Sent by soc_core.py --test-alert. It must appear only in the Test tab, "
+                                         "open no incident and send no push notification."))
+        print(f"[*] {len(combos)} test alert(s) sent (test: true).")
         return 0
 
     if args.status or not (args.test_ingest or args.replay):

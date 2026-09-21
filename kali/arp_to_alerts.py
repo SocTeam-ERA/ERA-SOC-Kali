@@ -13,8 +13,8 @@ VLAN_SEVERITY below if the network changes — keep it in sync with
 targets.conf / the VLANS[] array in 1c_arp_discovery.sh):
 
     Management VLAN             -> critical  (should never see a random NIC)
-    Wiping / Floor / Printers /
-      Office                    -> medium
+    Floor / Printers / Office   -> medium
+    Wiping                      -> normal (racks are rebuilt constantly)
     Guest / Employees WiFi      -> skipped entirely (unknown personal
                                     devices are the expected, normal case
                                     there — alerting would be pure noise and
@@ -51,12 +51,19 @@ DEFAULT_STATE = DATA_DIR / "mac_state.json"
 
 VLAN_SEVERITY = {
     "10.201.0.0/16":   "critical",  # Management
-    "10.21.0.0/16":    "medium",    # Wiping -- actively being built out, not inventoried yet
+    "10.21.0.0/16":    "normal",    # Wiping -- racks come and go constantly; churn is the normal state
     "10.69.0.0/16":    "medium",    # Floor
     "192.168.61.0/24": "medium",    # Printers
     "192.168.7.0/24":  "medium",    # Office
 }
 SKIP_VLANS = {"192.168.8.0/24"}     # Guest / Employees WiFi — unknown devices expected
+
+# More than this many new devices of one kind on one VLAN in a single scan are raised as ONE
+# alert with the list inside, not one row each (a wave of 10-22 laptops joining at once is a
+# single event; 2026-09-18 produced 39 rows in two waves). At or below it, each device still
+# gets its own alert exactly as before.
+ARP_BULK_THRESHOLD = int(os.environ.get("SOC_ARP_BULK_THRESHOLD", "5"))
+MAX_BULK_LISTED = 100
 
 
 def _is_locally_administered(mac: str) -> bool:
@@ -121,6 +128,39 @@ def parse_assets(path: Path) -> dict:
     return current
 
 
+def _emit_bulk(cidr: str, devices: list, randomized: bool, severity: str) -> int:
+    """One alert for a wave of new devices on a VLAN. The list is kept in details, and the
+    entities are set here so correlation still sees every device (see alert_context.py)."""
+    n = len(devices)
+    kind = "likely-randomized Wi-Fi MAC(s)" if randomized else "new device(s)"
+    listed = devices[:MAX_BULK_LISTED]
+    vendors = {}
+    for _, info in devices:
+        v = info["vendor"] or "unknown vendor"
+        vendors[v] = vendors.get(v, 0) + 1
+    top = ", ".join(f"{v} x{c}" for v, c in sorted(vendors.items(), key=lambda kv: -kv[1])[:4])
+    entities = []
+    for mac, info in listed:
+        entities.append({"type": "mac", "value": mac, "role": "source"})
+        entities.append({"type": "ip", "value": info["ip"], "role": "source"})
+    emit_alert(Alert(
+        type="intrusion", severity=severity,
+        title=f"{n} {kind} on VLAN {cidr} in one scan" if not randomized
+              else f"{n} likely-randomized Wi-Fi MACs on VLAN {cidr} in one scan",
+        detector="arp_discovery",
+        description=(f"{n} MAC address(es) not seen before on VLAN {cidr} appeared in a single scan "
+                     f"({top}). Grouped into one alert instead of {n} rows; the full list is in "
+                     "details.devices. Confirm these devices are authorized."
+                     + (" These are locally-administered (private/randomized) MACs, almost always "
+                        "phones or laptops reconnecting." if randomized else "")),
+        details={"cidr": cidr, "change": "bulk_new_devices", "count": n, "locally_administered": randomized,
+                 "truncated": n > len(listed), "entities": entities,
+                 "devices": [{"mac": m, "ip": i["ip"], "vendor": i["vendor"], "iface": i["iface"]}
+                             for m, i in listed]},
+    ))
+    return 1
+
+
 def run(assets_path: Path, state_path: Path) -> int:
     current = parse_assets(assets_path)
     n = 0
@@ -167,9 +207,15 @@ def run(assets_path: Path, state_path: Path) -> int:
                 n += 1
                 continue
 
+            pending = {False: [], True: []}      # keyed by "randomized MAC"
             for mac, info in macs.items():
                 if mac not in prev_macs:
-                    randomized = _is_locally_administered(mac)
+                    pending[_is_locally_administered(mac)].append((mac, info))
+            for randomized, devices in pending.items():
+                if len(devices) > ARP_BULK_THRESHOLD:
+                    n += _emit_bulk(cidr, devices, randomized, "normal" if randomized else severity)
+                    devices = []
+                for mac, info in devices:
                     dev_severity = "normal" if randomized else severity
                     title = f"New device on VLAN {cidr}: {mac} ({info['vendor'] or 'unknown vendor'})"
                     desc = (f"A MAC address not seen before on VLAN {cidr} "

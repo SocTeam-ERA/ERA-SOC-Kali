@@ -50,7 +50,7 @@
       "steps": [
         {
           "detector": "arp_discovery",
-          "title_regex": "^New device on VLAN"
+          "title_regex": "^(New device on VLAN|\\d+ new device\\(s\\) on VLAN)"
         },
         {
           "detector": [

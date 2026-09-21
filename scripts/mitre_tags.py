@@ -53,7 +53,7 @@ TECHNIQUES: Dict[str, tuple] = {
 
 # (detector, title regex, [(technique, basis), ...]); detector None = any.
 _TITLE_RULES: List[tuple] = [
-    ("arp_discovery",  r"^New device on VLAN",                      [("T1200", "observed")]),
+    ("arp_discovery",  r"^(New device on VLAN|\d+ new device\(s\) on VLAN)", [("T1200", "observed")]),
     ("login_monitor",  r"^Brute-force:",                            [("T1110", "observed")]),
     ("login_monitor",  r"^Failed login from unknown IP",            [("T1110.001", "observed")]),
     ("login_monitor",  r"^Successful login after \d+ failures",     [("T1110", "observed"), ("T1078", "observed")]),

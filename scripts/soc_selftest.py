@@ -379,6 +379,112 @@ def inner() -> int:
         check("the archive has the alerts and config but NOT the API keys",
               "data/alerts.json" in names and "config/" in names and "api_keys" not in names)
 
+    # ---- severity model, grouping, test alerts, context ------------------------
+    group("aide")
+    import types
+    import aide_to_alerts as A
+    sev = A.severity_for
+    check("AIDE: an ordinary path is normal", sev("/home/user/notes.txt") == "normal")
+    check("AIDE: /etc, /root, /usr/local and .ssh paths are medium",
+          all(sev(x) == "medium" for x in ("/etc/hosts", "/root/x", "/usr/local/bin/tool", "/home/u/.ssh/known_hosts")))
+    check("AIDE: cron, spool cron and the project itself are critical",
+          all(sev(x) == "critical" for x in ("/etc/cron.d/job", "/var/spool/cron/crontabs/root", "/opt/sentinel-soc/scripts/x.py")))
+
+    def run_aide(paths, kind="Changed entries:"):
+        report = kind + "\n---\n" + "".join(f"f =.... mc..H.. .  : {p_}\n" for p_ in paths) + "\nDetailed information:\n"
+        real = A.subprocess.run
+        A.subprocess.run = lambda *a_, **k_: types.SimpleNamespace(stdout=report, stderr="", returncode=4)
+        try:
+            A.run()
+        finally:
+            A.subprocess.run = real
+
+    def suppressed_count() -> int:
+        return len(soc_core.SUPPRESSED_LOG.read_text().splitlines()) if soc_core.SUPPRESSED_LOG.exists() else 0
+    n = len(feed()); run_aide([f"/srv/data/pkg/file{i}" for i in range(7)])
+    got = new_alerts(n)
+    grp = find(got, "File integrity: 7 files changed under /srv/data/pkg")
+    check("AIDE: more than 5 files under one folder become ONE alert", grp is not None and len(got) == 1)
+    check("AIDE: the grouped alert lists the files and the count",
+          grp is not None and grp["details"].get("count") == 7 and len(grp["details"].get("files", [])) == 7)
+    n = len(feed()); run_aide([f"/srv/data/other/file{i}" for i in range(5)])
+    check("AIDE: 5 files (not more) stay individual", len(new_alerts(n)) == 5)
+    import suppression_admin as _sa
+    q_rule = _sa.create_rule("selftest", "a folder whose files are known benign",
+                             match={"detector": "aide", "title_contains": "/srv/data/quiet/"})["rule"]
+    n = len(feed()); sup_before = suppressed_count()
+    run_aide([f"/srv/data/quiet/file{i}" for i in range(8)])
+    got, sup_new = new_alerts(n), suppressed_count() - sup_before
+    check("AIDE: files a suppression rule matches stay individual (and are hidden, not grouped)",
+          not got and sup_new == 8, f"feed +{len(got)}, suppressed +{sup_new}")
+    _sa.delete_rule(q_rule["id"], "selftest")
+
+    group("test alerts")
+    calls = {"push": 0, "playbook": 0}
+    import playbooks as _pb
+    real_push, real_run = soc_core.notify_critical, _pb.run_for_alert
+    soc_core.notify_critical = lambda *a_, **k_: calls.__setitem__("push", calls["push"] + 1)
+    _pb.run_for_alert = lambda *a_, **k_: calls.__setitem__("playbook", calls["playbook"] + 1)
+    try:
+        def crit(**kw):
+            return soc_core.emit_alert(soc_core.Alert(type="intrusion", severity="critical", title="selftest critical",
+                                                      source_ip="10.9.9.9", detector=kw.pop("detector", "login_monitor"), **kw), echo=False)
+        real_alert = crit()
+        check("a normal alert has no 'test' key", "test" not in real_alert)
+        check("a real critical alert does push and run playbooks (the probes work)", calls == {"push": 1, "playbook": 1}, str(calls))
+        calls.update(push=0, playbook=0)
+        by_flag = crit(test=True)
+        by_detector = crit(detector="manual_test")
+        os.environ["SOC_TEST_ALERTS"] = "1"
+        try:
+            by_env = crit()
+        finally:
+            del os.environ["SOC_TEST_ALERTS"]
+        check("test=True, a test detector and SOC_TEST_ALERTS=1 all mark the record test: true",
+              all(a_.get("test") is True for a_ in (by_flag, by_detector, by_env)))
+        check("a test alert opens no incident", not any("incident_id" in a_["details"] for a_ in (by_flag, by_detector, by_env)))
+        check("a test alert sends no push and runs no playbook", calls == {"push": 0, "playbook": 0}, str(calls))
+    finally:
+        soc_core.notify_critical, _pb.run_for_alert = real_push, real_run
+
+    group("context")
+
+    def emit_ctx(detector, source_ip, **details):
+        return soc_core.emit_alert(soc_core.Alert(type="intrusion", severity="medium", title=f"selftest {detector}",
+                                                  source_ip=source_ip, detector=detector, details=details), echo=False)
+    a_pub = emit_ctx("zeek", "10.9.9.9", dst="8.8.8.8")
+    check("a public IP in details.dst is checked for anonymizers",
+          "anonymizer" in a_pub["details"] and a_pub["details"].get("anonymizer_ip") == "8.8.8.8")
+    check("a public IP in details.ioc_ip is checked too",
+          emit_ctx("malware_detector", "10.9.9.9", ioc_ip="1.1.1.1")["details"].get("anonymizer_ip") == "1.1.1.1")
+    a_priv = emit_ctx("zeek", "10.9.9.9", dst="10.9.9.10")
+    check("two private IPs get no anonymizer block", "anonymizer" not in a_priv["details"] and "anonymizer_ip" not in a_priv["details"])
+    check("login_monitor's source is the actor", emit_ctx("login_monitor", "10.9.9.9")["details"].get("source_role") == "actor")
+    check("kali_scan's source is the asset", emit_ctx("kali_scan", "10.9.9.9")["details"].get("source_role") == "asset")
+    own = next(iter(soc_core.own_ips()), None)
+    if own:
+        check("source_is_self is set for this box's own address", emit_ctx("kali_scan", own)["details"].get("source_is_self") is True)
+    check("source_is_self is absent for another machine", "source_is_self" not in emit_ctx("kali_scan", "10.9.9.9")["details"])
+
+    group("nmap grouping")
+
+    def host_xml(ip, ports):
+        body = "".join(f'<port protocol="tcp" portid="{p_}"><state state="open"/><service name="http" method="probed" conf="10"/></port>' for p_ in ports)
+        return ('<?xml version="1.0"?><nmaprun><host><status state="up"/>'
+                f'<address addr="{ip}" addrtype="ipv4"/><hostnames/><ports>{body}</ports></host></nmaprun>')
+    st2 = tmp / "port_state_group.json"
+    (tmp / "g1.xml").write_text(host_xml("10.1.2.6", [22])); N.run(tmp / "g1.xml", {22}, st2)
+    n = len(feed())
+    (tmp / "g2.xml").write_text(host_xml("10.1.2.6", [22, 8001, 8002, 8003, 8004, 8005])); N.run(tmp / "g2.xml", {22}, st2)
+    got = new_alerts(n)
+    check("more than 4 new ports on one host become ONE alert", find(got, "NEW open ports on 10.1.2.6") is not None
+          and not any(a_["title"].startswith("NEW open port ") for a_ in got), str([a_["title"] for a_ in got]))
+    (tmp / "g3.xml").write_text(host_xml("10.1.2.7", [22])); N.run(tmp / "g3.xml", {22}, st2)
+    n = len(feed())
+    (tmp / "g4.xml").write_text(host_xml("10.1.2.7", [22, 8001, 8002, 8003, 8004])); N.run(tmp / "g4.xml", {22}, st2)
+    got = new_alerts(n)
+    check("4 new ports stay individual", sum(a_["title"].startswith("NEW open port ") for a_ in got) == 4, str([a_["title"] for a_ in got]))
+
     # ---- (added) API server with read and write keys ------------------------------
     group("api")
     import socket
@@ -414,6 +520,10 @@ def inner() -> int:
         check("incidents, entities, metrics, sources, detections and playbooks answer",
               all(_call(p)[0] == 200 for p in ("/api/incidents", "/api/entities", "/api/metrics", "/api/sources",
                                                "/api/detections", "/api/playbooks", "/api/suppressions")))
+        code, d = _call("/api/self")
+        check("GET /api/self returns the hostname and this box's addresses",
+              code == 200 and bool(d.get("hostname")) and isinstance(d.get("addresses"), list)
+              and all({"ip", "interface"} <= set(x) for x in d["addresses"]))
         check("a search through the API works", _call("/api/search?source=alerts&q=batch&since=1h")[0] == 200)
         check("a path-traversal search source is rejected", _call("/api/search?source=zeek:../../etc/passwd&q=x")[0] == 400)
         check("a read-only key cannot change an incident", _call(f"/api/incidents/{inc_id}", "t-read", "POST", {"comment": "x"})[0] == 403)
@@ -539,7 +649,9 @@ def run_canary() -> None:
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     rec = soc_core.emit_alert(soc_core.Alert(
         type="intrusion", severity="normal", detector="selftest", title=f"SELFTEST canary {stamp}",
-        description="Harmless round-trip test by soc_selftest.py; resolved automatically."), echo=False)
+        description="Harmless round-trip test by soc_selftest.py; resolved automatically.",
+        test=True), echo=False)
+    check("the canary is marked as a test alert (it stays out of the real feed)", rec.get("test") is True)
     time.sleep(1)
     in_feed = any(a["id"] == rec["id"] for a in soc_core._load_snapshot())
     check("the alert reached the live feed", in_feed)

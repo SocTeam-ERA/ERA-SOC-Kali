@@ -23,8 +23,12 @@ Three parts:
     python3 soc_selftest.py            parts 1 and 2
     python3 soc_selftest.py --canary   parts 1, 2 and 3
     python3 soc_selftest.py --isolated | --live      only one part
+    python3 soc_selftest.py --live --alert-on-fail   (what the daily cron runs) raise ONE alert
+                                                     when checks fail; a repeat of the same failures
+                                                     is not re-alerted, and a recovery is recorded
 
-Exit code 0 = everything passed. The summary is saved to data/selftest_last.json.
+Exit code 0 = everything passed. The summary is saved to data/selftest_last.json:
+{at, passed, total, failed, failures: [{name, detail}]}, which soc_doctor reads.
 It only uses harmless test inputs (the EICAR string is the industry-standard antivirus
 test file) and never touches the network beyond this machine's own API.
 """
@@ -160,8 +164,6 @@ def inner() -> int:
           entries.get("/etc/cron.d/evil") == "added" and entries.get("/usr/local/bin/old") == "removed"
           and entries.get("/etc/passwd") == "changed", str(entries))
     check("changes to /etc/passwd are critical", A.severity_for("/etc/passwd") == "critical")
-    check("a file that matches its last commit is recognised", A.committed_version(str(SCRIPTS / "soc_core.py")) is not None
-          or True)   # depends on the working tree being clean; informational only
     from soc_core import Alert, emit_alert
     n = len(feed())
     emit_alert(Alert(type="intrusion", severity="critical", title="File integrity: /etc/cron.d/evil appeared",
@@ -405,6 +407,30 @@ def run_canary() -> None:
         check("the canary was resolved (dashboard stays clean)", False, str(e))
 
 
+def alert_on_change(summary: dict, previous: dict) -> None:
+    """One alert when the set of failing checks changes to something non-empty, one 'recovered'
+    alert when a failing run is followed by a clean one. The same failures on consecutive
+    daily runs stay quiet."""
+    sys.path[:0] = [str(SCRIPTS)]
+    from soc_core import Alert, emit_alert
+    now_failed = sorted(f["name"] for f in summary["failures"])
+    was_failed = sorted(f["name"] for f in previous.get("failures", []))
+    if now_failed and now_failed != was_failed:
+        emit_alert(Alert(
+            type="intrusion", severity="medium", detector="selftest",
+            title=f"Self-test failed: {len(now_failed)} check(s)",
+            description=("The daily self-test found problems in the detection pipeline: "
+                         + "; ".join(now_failed[:5]) + (" ..." if len(now_failed) > 5 else "")
+                         + ". Run: sg soc -c 'python3 /opt/sentinel-soc/scripts/soc_selftest.py'"),
+            details={"failures": summary["failures"][:20], "passed": summary["passed"], "total": summary["total"]}), echo=False)
+    elif not now_failed and was_failed:
+        emit_alert(Alert(
+            type="intrusion", severity="normal", detector="selftest",
+            title="Self-test recovered",
+            description=f"All {summary['total']} self-test checks pass again.",
+            details={"passed": summary["passed"], "total": summary["total"]}), echo=False)
+
+
 def main() -> int:
     args = sys.argv[1:]
     if "--inner" in args:
@@ -417,18 +443,23 @@ def main() -> int:
     if "--canary" in args:
         run_canary()
     failed = [r for r in results if not r[1]]
-    width = max(len(n) for n, _, _ in results) if results else 0
     for name, ok, detail in results:
         print(f"{'PASS' if ok else 'FAIL'}  {name}" + (f"   [{detail}]" if detail and not ok else ""))
     print(f"\n{len(results) - len(failed)}/{len(results)} passed in {time.time() - started:.0f}s"
           + ("" if not failed else f" -- {len(failed)} FAILED"))
+    summary = {"at": datetime.now(timezone.utc).isoformat(), "passed": len(results) - len(failed), "total": len(results),
+               "failed": len(failed), "failures": [{"name": n, "detail": d} for n, _, d in failed]}
+    try:
+        previous = json.loads((DATA / "selftest_last.json").read_text())
+    except (OSError, ValueError):
+        previous = {}
     try:
         DATA.mkdir(parents=True, exist_ok=True)
-        (DATA / "selftest_last.json").write_text(json.dumps(
-            {"at": datetime.now(timezone.utc).isoformat(), "passed": len(results) - len(failed), "total": len(results),
-             "failures": [n for n, _, _ in failed]}, indent=2))
+        (DATA / "selftest_last.json").write_text(json.dumps(summary, indent=2))
     except OSError:
         pass
+    if "--alert-on-fail" in args:
+        alert_on_change(summary, previous)
     return 1 if failed else 0
 
 

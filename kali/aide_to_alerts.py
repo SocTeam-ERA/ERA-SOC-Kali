@@ -61,8 +61,32 @@ SECTION_CHANGED = "changed"
 ENTRY_RE = re.compile(r": (/\S.*)$")
 
 
+REPO = Path(os.environ.get("SOC_REPO", "/opt/sentinel-soc"))
+
+
 def severity_for(path: str) -> str:
     return "critical" if path.startswith(CRITICAL_PREFIXES) else "medium"
+
+
+def committed_version(path: str) -> str | None:
+    """If `path` is a tracked file in this project's git repo whose content is exactly its last
+    commit, return "<short sha> by <author>", else None. A change like that is a committed,
+    reviewable edit, not an unexplained modification. Any git problem means None (stays critical)."""
+    try:
+        rel = str(Path(path).resolve().relative_to(REPO))
+    except (ValueError, OSError):
+        return None
+    git = ["git", "-c", f"safe.directory={REPO}", "-C", str(REPO)]
+    try:
+        if subprocess.run(git + ["ls-files", "--error-unmatch", "--", rel], capture_output=True, timeout=10).returncode:
+            return None
+        if subprocess.run(git + ["diff", "--quiet", "HEAD", "--", rel], capture_output=True, timeout=10).returncode:
+            return None
+        out = subprocess.run(git + ["log", "-1", "--format=%h by %an", "--", rel], capture_output=True,
+                             text=True, timeout=10).stdout.strip()
+        return out or None
+    except (OSError, subprocess.SubprocessError):
+        return None
 
 
 def parse_report(text: str) -> list[tuple[str, str]]:
@@ -132,13 +156,21 @@ def run() -> int:
     for kind, path in entries:
         sev = severity_for(path)
         verb = {"added": "appeared", "removed": "was removed", "changed": "changed"}[kind]
+        commit = committed_version(path) if kind != "removed" and sev == "critical" else None
+        details = {"path": path, "change": kind}
+        note = ""
+        if commit:
+            sev = "normal"
+            details["git_commit"] = commit
+            note = (f" The file matches its last commit ({commit}), so this is a committed edit; "
+                    "review that commit if you did not make it.")
         emit_alert(Alert(
             type="intrusion", severity=sev,
             title=f"File integrity: {path} {verb}",
             detector="aide",
             description=(f"AIDE file integrity check: {path} {verb} unexpectedly. "
-                         f"See /etc/aide/aide.conf.d/90_sentinel_soc for what's watched."),
-            details={"path": path, "change": kind},
+                         f"See /etc/aide/aide.conf.d/90_sentinel_soc for what's watched.{note}"),
+            details=details,
         ))
         n += 1
 

@@ -348,6 +348,11 @@ def device_key(ip: str, ip_to_mac: dict[str, str]) -> str:
     return mac if mac else f"ip:{ip}"
 
 
+# A vulnerability finding must be missing this long before "No longer detected" is
+# raised; a shorter gap is treated as the scan simply not seeing it that time.
+VULN_GONE_HOURS = float(os.environ.get("SOC_VULN_GONE_HOURS", "72"))
+
+
 def _vuln_state_path(diff_state: Path) -> Path:
     return diff_state.with_name(diff_state.stem + "_vulns" + diff_state.suffix)
 
@@ -385,6 +390,7 @@ def _run_vulns(vulns: list, diff_state: Path | None) -> int:
         return n
 
     vuln_state = _vuln_state_path(diff_state)
+    now = datetime.now(timezone.utc)
     with diff_state_lock(vuln_state):
         previous = _load_state(vuln_state)
         current_by_key = {}
@@ -394,27 +400,73 @@ def _run_vulns(vulns: list, diff_state: Path | None) -> int:
             if key not in previous:
                 emit_alert(Alert(**v))
                 n += 1
-            # else: identical finding still present and already alerted once -- stay quiet
+            # else: the finding is already known (present now, or missing only briefly)
 
+        new_state = {}
+        for key, v in current_by_key.items():
+            new_state[key] = {"title": v.get("title"), "source_ip": v.get("source_ip"),
+                              "hostname": v.get("hostname"), "severity": v.get("severity"),
+                              "last_seen": now.isoformat()}
         for key, old in previous.items():
-            if key not in current_by_key:
-                emit_alert(Alert(
-                    type="vuln", severity="normal",
-                    title=f"No longer detected (unconfirmed): {old.get('title', key)}",
-                    source_ip=old.get("source_ip"), hostname=old.get("hostname"),
-                    detector="kali_scan",
-                    description=("This finding was present in a previous scan and is no longer "
-                                  "detected -- either it was fixed, or the host wasn't reachable "
-                                  "in this scan. Confirm before treating it as resolved."),
-                    details={"previous_title": old.get("title", key)},
-                ))
-                n += 1
-
-        new_state = {k: {"title": v.get("title"), "source_ip": v.get("source_ip"),
-                          "hostname": v.get("hostname"), "severity": v.get("severity")}
-                     for k, v in current_by_key.items()}
+            if key in current_by_key:
+                continue
+            # Missing this scan. One missed scan is usually the host being asleep or a
+            # script timing out, and dropping the finding here made it re-alert as
+            # brand new the next time it showed up (23 real findings had produced 130
+            # alerts by 2026-09-21). Keep it silently until it has been gone for
+            # VULN_GONE_HOURS; only then say it is no longer detected.
+            last = old.get("last_seen")
+            try:
+                gone_h = (now - datetime.fromisoformat(last)).total_seconds() / 3600 if last else 0.0
+            except ValueError:
+                gone_h = 0.0
+            if gone_h < VULN_GONE_HOURS:
+                new_state[key] = {**old, "last_seen": last or now.isoformat()}
+                continue
+            emit_alert(Alert(
+                type="vuln", severity="normal",
+                title=f"No longer detected (unconfirmed): {old.get('title', key)}",
+                source_ip=old.get("source_ip"), hostname=old.get("hostname"),
+                detector="kali_scan",
+                description=(f"This finding was present in an earlier scan and has not been detected for "
+                             f"{VULN_GONE_HOURS:g}+ hours -- either it was fixed, or the host has been "
+                             "unreachable. Confirm before treating it as resolved."),
+                details={"previous_title": old.get("title", key)},
+            ))
+            n += 1
         _save_state(vuln_state, new_state)
     return n
+
+
+# A port that disappears and comes back is usually a flaky scan result (UDP
+# especially: a service that misses one probe looks closed, then "opens" again),
+# not a change. Each device keeps when every port was last seen; a port that is
+# "new" but was seen within this many hours is logged, not alerted. A port that
+# was never seen, or has been gone longer, still alerts.
+PORT_QUIET_HOURS = float(os.environ.get("SOC_PORT_QUIET_HOURS", "24"))
+SEEN_RETENTION_DAYS = 14
+
+
+def _seen_recently(iso: str | None, now: datetime) -> bool:
+    if not iso:
+        return False
+    try:
+        return (now - datetime.fromisoformat(iso)).total_seconds() < PORT_QUIET_HOURS * 3600
+    except ValueError:
+        return False
+
+
+def _update_seen(prev_seen: dict, ports: dict, now: datetime) -> dict:
+    """Last-seen times: keep recent history (also for ports gone this scan), stamp what is open now."""
+    keep = {}
+    for k, t in prev_seen.items():
+        try:
+            if (now - datetime.fromisoformat(t)).days < SEEN_RETENTION_DAYS:
+                keep[k] = t
+        except ValueError:
+            continue
+    keep.update({k: now.isoformat() for k in ports})
+    return keep
 
 
 def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
@@ -443,7 +495,9 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
 
         if not previous:
             # first run: seed the baseline quietly, one summary alert (no flood)
-            new_state = {device_key(ip, ip_to_mac): {"ip": ip, "ports": {k: v["service"] for k, v in ports.items()}}
+            now_seed = datetime.now(timezone.utc)
+            new_state = {device_key(ip, ip_to_mac): {"ip": ip, "ports": {k: v["service"] for k, v in ports.items()},
+                                                     "seen": _update_seen({}, ports, now_seed)}
                          for ip, ports in current.items()}
             host_count = len(current)
             port_count = sum(len(p) for p in current.values())
@@ -481,13 +535,20 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
         # MAC falls back to "ip:<addr>" -- identical behavior to before this
         # change, never assumes continuity it can't verify.
         new_state = dict(previous)
-        new_c = closed_c = 0
+        now = datetime.now(timezone.utc)
+        new_c = closed_c = reappeared_c = 0
         new_events = []  # (info, ip, hostname, is_apple) -- decide bulk vs. per-row after the loop
         for ip, ports in current.items():
             key = device_key(ip, ip_to_mac)
             prev_entry = previous.get(key, {})
             prev_ports = prev_entry.get("ports", {})
+            prev_seen = prev_entry.get("seen", {})
             new_keys = set(ports) - set(prev_ports)
+            back = {k for k in new_keys if _seen_recently(prev_seen.get(k), now)}
+            for k in back:
+                print(f"[*] {ip} {k} is back after a gap under {PORT_QUIET_HOURS:g}h -- flaky result, not alerted")
+            new_keys -= back
+            reappeared_c += len(back)
             # co-occurrence check across THIS host's newly-opened ports only --
             # see APPLE_SYNC_PORT's comment above.
             new_port_nums = {ports[k]["port"] for k in new_keys}
@@ -502,7 +563,8 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
                 info = {"port": int(pnum), "proto": proto, "service": prev_ports[pkey], "banner": ""}
                 emit_port(info, ip, hostnames.get(ip), baseline, change="closed")
                 closed_c += 1
-            new_state[key] = {"ip": ip, "ports": {k: v["service"] for k, v in ports.items()}}
+            new_state[key] = {"ip": ip, "ports": {k: v["service"] for k, v in ports.items()},
+                              "seen": _update_seen(prev_seen, ports, now)}
 
         _save_state(diff_state, new_state)
 
@@ -529,7 +591,8 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
     n += new_c
     print(f"[*] Change detection: {new_c} new port alert(s) "
           f"({'1 bulk summary' if new_c > PORT_BULK_ALERT_THRESHOLD else f'{new_c} individual'}), "
-          f"{closed_c} port(s) closed (logged, not alerted) + {vuln_n} vuln alert(s). ({n} total into the SOC feed.)")
+          f"{closed_c} port(s) closed and {reappeared_c} re-appeared within {PORT_QUIET_HOURS:g}h "
+          f"(both logged, not alerted) + {vuln_n} vuln alert(s). ({n} total into the SOC feed.)")
     return 0
 
 

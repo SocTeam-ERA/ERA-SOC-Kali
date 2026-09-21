@@ -36,7 +36,7 @@ Heuristics:
     * Suspicious DNS         : query to high-risk TLD or bad-domain list -> phishing (medium)
 """
 from __future__ import annotations
-import argparse, ipaddress, os, sys
+import argparse, ipaddress, os, re, subprocess, sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -47,6 +47,17 @@ from soc_core import Alert, emit_alert, resolve_hostname  # noqa: E402
 CLEARTEXT = {23: "Telnet", 21: "FTP", 110: "POP3", 143: "IMAP", 161: "SNMP", 512: "rexec", 513: "rlogin"}
 SUSPICIOUS_TLDS = (".ru", ".su", ".top", ".xyz", ".tk", ".gq", ".cf", ".ml", ".zip", ".mov")
 PORT_SCAN_THRESHOLD = 15          # distinct dst ports from one src => scan
+
+
+def _own_ips() -> set:
+    """This appliance's own IPv4 addresses. Its normal background traffic (updates, feed
+    refreshes, the SOC's own services) touches a few dozen ports and kept being flagged
+    as a scan; a wide sweep from here still is one, see the doubled threshold below."""
+    try:
+        out = subprocess.run(["ip", "-o", "-4", "addr", "show"], capture_output=True, text=True, timeout=5).stdout
+        return set(re.findall(r"inet (\d+\.\d+\.\d+\.\d+)/", out))
+    except (OSError, subprocess.SubprocessError):
+        return set()
 SYN_ONLY_THRESHOLD = 20           # SYN-without-ACK count from one src => scan
 
 TARGETS_FILE = Path(os.environ.get("SOC_TARGETS_FILE", Path(__file__).resolve().parent / "targets.conf"))
@@ -168,6 +179,7 @@ def parse(stream, ioc_ips: set, bad_domains: set, pcap_path: str | None = None,
                 dns_hits[(src, name)] = http_host or name
 
     n = 0
+    own_ips = _own_ips()
     # 1) port scans
     for src, ports in dst_ports.items():
         if src in gateway_ips:
@@ -180,7 +192,10 @@ def parse(stream, ioc_ips: set, bad_domains: set, pcap_path: str | None = None,
                           # on 5037 plus a spread of ephemeral ports), which isn't scan behavior.
         except ValueError:
             pass
-        if len(ports) >= PORT_SCAN_THRESHOLD or syn_only.get(src, 0) >= SYN_ONLY_THRESHOLD:
+        own = src in own_ips
+        threshold = PORT_SCAN_THRESHOLD * 2 if own else PORT_SCAN_THRESHOLD
+        syn_threshold = SYN_ONLY_THRESHOLD * 2 if own else SYN_ONLY_THRESHOLD
+        if len(ports) >= threshold or syn_only.get(src, 0) >= syn_threshold:
             sev = "critical" if len(ports) >= PORT_SCAN_THRESHOLD * 2 else "medium"
             _emit(Alert(
                 type="port_scan", severity=sev,

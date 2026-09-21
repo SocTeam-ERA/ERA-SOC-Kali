@@ -16,6 +16,11 @@
 #  offline hosts excluded, instead of letting 3_vuln_scan.sh fall back to
 #  everything in targets.conf.
 # ---------------------------------------------------------------------
+# Same standing authorization as scheduled_scan.sh: this runs unattended from
+# soc-vuln-scan.timer, so 3_vuln_scan.sh's interactive "type yes" prompt has
+# nobody to answer it. Without this the first weekly run (2026-09-20) aborted
+# in under a second and scanned nothing.
+export SCAN_AUTHORIZED=yes
 source "$(dirname "$0")/lib.sh"
 
 LATEST="$(ls -t "$RESULTS_DIR"/arp_live_*_scan.txt 2>/dev/null | head -1)"

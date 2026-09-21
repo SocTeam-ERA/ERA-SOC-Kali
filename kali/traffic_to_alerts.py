@@ -203,7 +203,8 @@ def parse(stream, ioc_ips: set, bad_domains: set, pcap_path: str | None = None,
                 source_ip=src, hostname=resolve_hostname(src), detector="traffic_capture",
                 description=f"Host {src} contacted {len(ports)} distinct destination ports "
                             f"({syn_only.get(src,0)} SYN-only) — horizontal scan pattern.",
-                details={"distinct_ports": sorted(ports)[:40], "syn_only": syn_only.get(src, 0)},
+                details={"distinct_ports": sorted(ports)[:40], "syn_only": syn_only.get(src, 0),
+                         "source_role": "actor"},
             ), pcap_path)
             n += 1
     # 2) cleartext protocols -- only once a (src,dst,port) triple was seen
@@ -223,10 +224,11 @@ def parse(stream, ioc_ips: set, bad_domains: set, pcap_path: str | None = None,
         _emit(Alert(
             type="intrusion", severity="medium",
             title=f"Cleartext protocol {svc} ({port}/{l4proto}): {src} → {dst}",
-            source_ip=src, hostname=resolve_hostname(dst), detector="traffic_capture",
+            source_ip=src, hostname=resolve_hostname(src), detector="traffic_capture",
             description=f"{svc} traffic seen from {src} to {dst}. Cleartext protocols expose "
                         f"credentials on the wire; migrate to an encrypted equivalent.",
-            details={"service": svc, "port": port, "proto": l4proto, "dst": dst},
+            details={"service": svc, "port": port, "proto": l4proto, "dst": dst,
+                     "dst_hostname": resolve_hostname(dst), "source_role": "asset"},
         ), pcap_path)
         n += 1
     # 3) IOC IP contact
@@ -236,7 +238,9 @@ def parse(stream, ioc_ips: set, bad_domains: set, pcap_path: str | None = None,
             title=f"Traffic to/from known-bad IP {ip}",
             source_ip=src, hostname=resolve_hostname(src), detector="traffic_capture",
             description=f"Observed communication involving IOC IP {ip} ({src} ↔ {dst}).",
-            details={"ioc_ip": ip, "src": src, "dst": dst},
+            # the known-bad IP itself may be the source (it contacted us): then it is the actor
+            details={"ioc_ip": ip, "src": src, "dst": dst,
+                     "source_role": "actor" if src == ip else "asset"},
         ), pcap_path)
         n += 1
     # 4) suspicious DNS
@@ -246,7 +250,7 @@ def parse(stream, ioc_ips: set, bad_domains: set, pcap_path: str | None = None,
             title=f"Suspicious DNS query: {name}",
             source_ip=src, hostname=resolve_hostname(src), detector="traffic_capture",
             description=f"{src} resolved {name}, a high-risk / flagged domain.",
-            details={"query": name},
+            details={"query": name, "source_role": "asset"},
         ), pcap_path)
         n += 1
     return n

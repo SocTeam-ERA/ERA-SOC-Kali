@@ -23,9 +23,11 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import secrets
 import socket
 import ssl
+import subprocess
 import tempfile
 import time
 import urllib.error
@@ -121,6 +123,10 @@ ALERT_TYPES = (
 )
 
 
+# A detector (source_name) with one of these names is a test alert even if the flag is not set.
+TEST_DETECTORS = ("manual_test", "test", "debug_test")
+
+
 @dataclass
 class Alert:
     """One security event in the common schema."""
@@ -133,9 +139,13 @@ class Alert:
     description: str = ""
     detector: str = ""              # which script raised this
     details: Dict[str, Any] = field(default_factory=dict)
+    test: bool = False              # synthetic alert (demo / self-test): kept out of the real feed
     status: str = "open"            # open | acknowledged | resolved
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+    def is_test(self) -> bool:
+        return bool(self.test) or self.detector in TEST_DETECTORS
 
     def validate(self) -> None:
         if self.type not in ALERT_TYPES:
@@ -147,6 +157,24 @@ class Alert:
 # --------------------------------------------------------------------------- #
 #  Helpers
 # --------------------------------------------------------------------------- #
+
+_OWN_IPS_CACHE: Dict[str, Any] = {"at": 0.0, "value": {}}
+
+
+def own_ips() -> Dict[str, str]:
+    """{IPv4 address: interface} of this appliance (loopback excluded). Cached for a minute:
+    emit_alert() asks for every alert and a scan import emits hundreds in seconds."""
+    now = time.time()
+    if now - _OWN_IPS_CACHE["at"] > 60:
+        try:
+            out = subprocess.run(["ip", "-o", "-4", "addr", "show"], capture_output=True, text=True, timeout=5).stdout
+            found = {m.group(2): m.group(1) for m in re.finditer(r"^\d+:\s+(\S+)\s+inet (\d+\.\d+\.\d+\.\d+)/", out, re.M)
+                     if m.group(1) != "lo"}
+        except (OSError, subprocess.SubprocessError):
+            found = {}
+        _OWN_IPS_CACHE.update(at=now, value=found)
+    return _OWN_IPS_CACHE["value"]
+
 
 def resolve_hostname(ip: Optional[str]) -> Optional[str]:
     """Best-effort reverse DNS. Returns None if it cannot be resolved."""
@@ -555,6 +583,9 @@ def confirm_demo_on_live_instance() -> None:
     configured means synthetic data is still harmless. Either one being
     configured means this looks like a live, wired instance -- ask first.
     """
+    # Everything emitted from here on is a test alert (`test: true`): the dashboard keeps it
+    # in the Test tab, and it opens no incident, runs no playbook and sends no push.
+    os.environ["SOC_TEST_ALERTS"] = "1"
     live_bits = []
     if NTFY_TOPIC:
         live_bits.append("NTFY_TOPIC is set -- fake critical alerts will push real phone notifications")
@@ -579,7 +610,14 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
     detection script uses.
     """
     alert.validate()
+    if os.environ.get("SOC_TEST_ALERTS") == "1":
+        alert.test = True
+    is_test = alert.is_test()
     record = asdict(alert)
+    if is_test:
+        record["test"] = True
+    else:
+        record.pop("test", None)     # the field only exists on test alerts
 
     # 0) enrich with IP geolocation for PUBLIC source IPs
     #    (no-op unless the GeoLite2 DB + geoip2 library are installed)
@@ -592,11 +630,22 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
         pass
 
     # 0b) flag Tor / VPN / proxy / datacenter (offline, cheap; no-op without data)
+    #     Any public IP counts, not only source_ip: when the actor is an internal host
+    #     and the interesting address is the remote one (details.dst, details.ioc_ip, ...),
+    #     that one is checked. details.anonymizer_ip says which IP the block describes.
     try:
-        from proxy_check import check as _anon_check
-        anon = _anon_check(record.get("source_ip"))
+        from proxy_check import check as _anon_check, is_public as _is_public
+        ext = record.get("source_ip") if _is_public(record.get("source_ip") or "") else None
+        if ext is None:
+            for v in (record.get("details") or {}).values():
+                if isinstance(v, str) and _is_public(v):
+                    ext = v
+                    break
+        anon = _anon_check(ext) if ext else None
         if anon:
-            record.setdefault("details", {})["anonymizer"] = anon
+            d = record.setdefault("details", {})
+            d["anonymizer"] = anon
+            d["anonymizer_ip"] = ext
     except Exception:
         pass
 
@@ -669,6 +718,8 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
     #     A follow-up "Incident opened" alert is emitted after this one is stored.
     followup = None
     try:
+        if is_test:
+            raise RuntimeError("test alerts never join or open incidents")
         import correlate
         incident_id, followup = correlate.on_alert(record)
         if incident_id:
@@ -716,13 +767,14 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
     # 4) real-time push for critical findings (no-op unless NTFY_TOPIC is
     #    set) -- independent of the backend connection above, so it still
     #    reaches someone even when that link is down.
-    if record.get("severity") == "critical":
+    if record.get("severity") == "critical" and not is_test:
         notify_critical(record)
 
     # 5) automatic responses configured in config/playbooks.json (see playbooks.py)
     try:
-        import playbooks
-        playbooks.run_for_alert(record)
+        if not is_test:
+            import playbooks
+            playbooks.run_for_alert(record)
     except Exception:
         pass
 
@@ -1080,10 +1132,21 @@ def _cli() -> int:
     ap = argparse.ArgumentParser(description="soc_core — alert bus + backend forwarder")
     ap.add_argument("--test-ingest", action="store_true",
                     help="Send ONE test alert to the configured backend and report the result")
+    ap.add_argument("--test-alert", action="store_true",
+                    help="Emit ONE alert marked test:true through the normal pipeline "
+                         "(local files + backend if configured); it must show only in the dashboard's Test tab")
     ap.add_argument("--replay", action="store_true",
                     help="Resend any alerts queued in the outbox (run from cron)")
     ap.add_argument("--status", action="store_true", help="Show config + counts")
     args = ap.parse_args()
+
+    if args.test_alert:
+        # 8.8.8.8 is a public address on purpose: it also exercises the anonymizer enrichment.
+        emit_alert(Alert(type="intrusion", severity="critical", detector="manual_test",
+                         title="Test alert (test: true) — safe to ignore", source_ip="8.8.8.8",
+                         description="Sent by soc_core.py --test-alert. It must appear only in the Test tab, "
+                                     "open no incident and send no push notification.", test=True))
+        return 0
 
     if args.status or not (args.test_ingest or args.replay):
         print("Backend forwarding:", "ENABLED" if INGEST_URL else "disabled (SOC_INGEST_URL not set)")
@@ -1104,7 +1167,7 @@ def _cli() -> int:
             return 1
         rec = asdict(Alert(type="port_scan", severity="normal",
                            title="Sentinel SOC connectivity test",
-                           source_ip="127.0.0.1", detector="soc_core",
+                           source_ip="127.0.0.1", detector="soc_core", test=True,
                            description="If you see this alert in the dashboard, Kali -> backend works."))
         ok, msg = _post_once(rec)
         print(f"[{'OK' if ok else 'FAIL'}] POST to {INGEST_URL} -> {msg}")

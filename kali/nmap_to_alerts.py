@@ -76,7 +76,9 @@ ALWAYS_REPORT_SCRIPTS = {"vulners", "ftp-anon", "http-default-accounts", "snmp-b
 # community string is exploitable immediately, no CVE research needed --
 # treat it as critical, same as a confirmed VULNERABLE finding, not the
 # generic "medium" fallback.
-CRITICAL_FINDING_SCRIPTS = {"ftp-anon", "http-default-accounts", "snmp-brute", "snmp-info"}
+# (ftp-anon is not in this set any more: anonymous FTP is a real exposure but medium, and it
+# was the only critical alert for something every printer does by default.)
+CRITICAL_FINDING_SCRIPTS = {"http-default-accounts", "snmp-brute", "snmp-info"}
 
 # ssl-enum-ciphers / ssl-cert produce output for EVERY TLS service, including
 # perfectly healthy ones -- unlike ftp-anon/http-default-accounts they can't
@@ -120,17 +122,19 @@ def tls_finding(sid: str, output: str) -> str | None:
 
 
 def sev_for_port(port: int, in_baseline: bool) -> str:
-    if not in_baseline and port in HIGH_RISK_PORTS:
-        return "critical"
-    if port in HIGH_RISK_PORTS:
-        return "medium"
-    return "normal" if in_baseline else "medium"
+    """Severity of a port seen by a manual scan with no change history: normal, medium
+    for a high-risk port that is not in the baseline."""
+    return "medium" if (not in_baseline and port in HIGH_RISK_PORTS) else "normal"
 
 
-def sev_for_new_port(port: int, in_baseline: bool) -> str:
-    """A newly-opened port is always worth a look — never 'normal'."""
-    s = sev_for_port(port, in_baseline)
-    return "medium" if s == "normal" else s
+def port_severity(port: int, notable: bool) -> str:
+    """Severity of a NEWLY opened port. A port our own scan finds is information, not an
+    alarm: it is normal unless there is a concrete reason. The reason is a remote-access,
+    file-sharing or database port (HIGH_RISK_PORTS) opening on a device that was already
+    known and had never shown that port (`notable`). On a device that just appeared, the
+    new-device alert already covers the event, and a port the device showed before is a
+    flapping scan result. Critical is only reached by the unconfirmed-fingerprint rule."""
+    return "medium" if notable and port in HIGH_RISK_PORTS else "normal"
 
 
 _SEV_ORDER = ["normal", "medium", "critical"]
@@ -216,8 +220,11 @@ def parse_xml(path: Path):
                 output = (script.get("output", "") or "").strip()
                 tls_reason = tls_finding(sid, output) if sid in ("ssl-enum-ciphers", "ssl-cert") else None
                 if tls_reason:
+                    # an expired or self-signed certificate is hygiene (normal); weak protocols or
+                    # ciphers are a real exposure (medium)
+                    tls_sev = "normal" if ("EXPIRED" in tls_reason or tls_reason == "self-signed certificate") else "medium"
                     vulns.append(dict(
-                        type="vuln", severity="medium",
+                        type="vuln", severity=tls_sev,
                         title=f"Weak TLS on {ip}:{pnum} ({sid}): {tls_reason}",
                         source_ip=ip, hostname=hostname, detector="kali_scan",
                         description=f"{tls_reason}. " + output[:350],
@@ -252,8 +259,9 @@ def parse_xml(path: Path):
     return current, hostnames, vulns
 
 
-def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | None,
-              apple_sync: bool = False, escalate_unconfirmed: bool = True):
+def build_port_alert(info: dict, ip: str, hostname, baseline: set, *, change: str | None,
+                     apple_sync: bool = False, escalate_unconfirmed: bool = True):
+    """The Alert for one port finding, or None (a closed port is only logged)."""
     pnum, proto = info["port"], info["proto"]
     sname, banner = info["service"], info["banner"]
     in_base = pnum in baseline
@@ -282,7 +290,7 @@ def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | Non
             # not a security event.
             sev = "normal"
         else:
-            sev = sev_for_new_port(pnum, in_base)
+            sev = port_severity(pnum, escalate_unconfirmed)
             if unconfirmed and escalate_unconfirmed:
                 sev = _escalate(sev)
         title = f"NEW open port {pnum}/{proto} ({sname}) on {ip}"
@@ -316,7 +324,7 @@ def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | Non
                  "a port-number guess — the service name may be wrong")
         desc += ("; investigate directly" if escalate_unconfirmed else
                  " (severity not raised: this device is newly seen, or has shown this port before)")
-    emit_alert(Alert(
+    return Alert(
         type="port_scan", severity=sev, title=title,
         source_ip=ip, hostname=hostname, detector="kali_scan",
         description=desc + ".",
@@ -325,7 +333,57 @@ def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | Non
                  "service_method": info.get("method") or "unknown",
                  "service_conf": info.get("conf"), "unconfirmed_fingerprint": unconfirmed,
                  "unconfirmed_escalated": bool(unconfirmed and escalate_unconfirmed)},
-    ))
+    )
+
+
+def emit_port(info: dict, ip: str, hostname, baseline: set, *, change: str | None,
+              apple_sync: bool = False, escalate_unconfirmed: bool = True):
+    alert = build_port_alert(info, ip, hostname, baseline, change=change, apple_sync=apple_sync,
+                             escalate_unconfirmed=escalate_unconfirmed)
+    if alert is not None:
+        emit_alert(alert)
+
+
+# More than this many newly opened ports on the SAME host in one scan are raised as one
+# alert with the list inside (a device that just joined typically opens 5-10 at once).
+HOST_BULK_THRESHOLD = int(os.environ.get("SOC_HOST_BULK_THRESHOLD", "4"))
+_SEV_RANK = {"normal": 0, "medium": 1, "critical": 2}
+
+
+def emit_host_group(ip: str, events: list, hostname, baseline: set) -> None:
+    """One alert for all the new ports of one host; severity is the highest member's."""
+    members = []
+    for info, _ip, _hn, is_apple, esc in events:
+        a = build_port_alert(info, ip, hostname, baseline, change="new", apple_sync=is_apple,
+                             escalate_unconfirmed=esc)
+        if a is not None:
+            members.append((info, a))
+    if not members:
+        return
+    sev = max((a.severity for _, a in members), key=_SEV_RANK.get)
+    shown = ", ".join(f"{i['port']}/{i['proto']} {i['service']}" for i, _ in members[:6])
+    more = f" (+{len(members) - 6} more)" if len(members) > 6 else ""
+    mitre: dict = {}
+    try:
+        from mitre_tags import tag as _tag
+        for _, a in members:
+            for t in _tag({"title": a.title, "detector": "kali_scan", "details": a.details}):
+                mitre.setdefault(t["technique"], t)
+    except Exception:
+        pass
+    details = {"change": "host_new_ports", "count": len(members),
+               "ports": [{"port": i["port"], "proto": i["proto"], "service": i["service"], "banner": i["banner"],
+                          "severity": a.severity, "unconfirmed_fingerprint": a.details.get("unconfirmed_fingerprint")}
+                         for i, a in members]}
+    if mitre:
+        details["mitre"] = list(mitre.values())
+    emit_alert(Alert(
+        type="port_scan", severity=sev,
+        title=f"NEW open ports on {ip}: {shown}{more}",
+        source_ip=ip, hostname=hostname, detector="kali_scan",
+        description=(f"{len(members)} ports that were NOT open in the previous scan are now open on {ip}: {shown}{more}. "
+                     "Grouped into one alert instead of one row per port; the full list is in details.ports."),
+        details=details))
 
 
 def build_ip_to_mac_map() -> dict[str, str]:
@@ -597,8 +655,15 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
                                       for info, ip, hn, is_apple, _esc in new_events]},
             ))
         else:
-            for info, ip, hn, is_apple, esc in new_events:
-                emit_port(info, ip, hn, baseline, change="new", apple_sync=is_apple, escalate_unconfirmed=esc)
+            by_host: dict = {}
+            for ev in new_events:
+                by_host.setdefault(ev[1], []).append(ev)
+            for host_ip, evs in by_host.items():
+                if len(evs) > HOST_BULK_THRESHOLD:
+                    emit_host_group(host_ip, evs, evs[0][2], baseline)
+                else:
+                    for info, ip, hn, is_apple, esc in evs:
+                        emit_port(info, ip, hn, baseline, change="new", apple_sync=is_apple, escalate_unconfirmed=esc)
 
     n += new_c
     print(f"[*] Change detection: {new_c} new port alert(s) "

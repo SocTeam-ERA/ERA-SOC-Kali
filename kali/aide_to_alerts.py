@@ -39,15 +39,23 @@ AIDE_CONFIG = os.environ.get("AIDE_CONFIG", "/etc/aide/aide.conf")
 
 # Paths where an unexpected change is a classic persistence / privilege-
 # escalation / defense-evasion indicator -- always critical. Everything
-# else the catch-all in 99_aide_root still watches is medium: still a
-# real, high-confidence finding, just not automatically in the
-# highest-value category.
+# else the catch-all in 99_aide_root still watches is normal (a file
+# changed on the SOC host is routine unless there is a concrete reason),
+# except system configuration and local programs, which are medium.
 CRITICAL_PREFIXES = (
     "/opt/sentinel-soc",  # this project's own detection code/config
     "/etc/passwd", "/etc/shadow", "/etc/group", "/etc/sudoers",
     "/etc/ssh/sshd_config", "/etc/systemd/system", "/etc/cron",
-    "/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/boot",
+    "/bin/", "/sbin/", "/usr/bin/", "/usr/sbin/", "/boot", "/var/spool/cron",
 )
+MEDIUM_PREFIXES = ("/etc/", "/root/", "/usr/local/", "/usr/lib/systemd", "/lib/systemd")
+
+# More than this many entries of one kind and severity under the same top-level folder in one
+# check become ONE alert with the list inside (a package upgrade or a deploy touches dozens).
+AIDE_BULK_THRESHOLD = int(os.environ.get("SOC_AIDE_BULK_THRESHOLD", "5"))
+MAX_BULK_LISTED = 100
+VERB = {"added": "appeared", "removed": "was removed", "changed": "changed"}
+PLURAL = {"added": "appeared", "removed": "were removed", "changed": "changed"}
 
 SECTION_ADDED = "added"
 SECTION_REMOVED = "removed"
@@ -65,7 +73,36 @@ REPO = Path(os.environ.get("SOC_REPO", "/opt/sentinel-soc"))
 
 
 def severity_for(path: str) -> str:
-    return "critical" if path.startswith(CRITICAL_PREFIXES) else "medium"
+    if path.startswith(CRITICAL_PREFIXES):
+        return "critical"
+    if path.startswith(MEDIUM_PREFIXES) or "/.ssh/" in path:
+        return "medium"
+    return "normal"
+
+
+def _record(kind: str, path: str, sev: str) -> dict:
+    return {"title": f"File integrity: {path} {VERB[kind]}", "severity": sev, "detector": "aide",
+            "details": {"path": path, "change": kind}}
+
+
+def _emit_group(kind: str, sev: str, folder: str, members: list) -> None:
+    from mitre_tags import tag
+    mitre: dict = {}
+    for _, path, _, _ in members:
+        for t in tag(_record(kind, path, sev)):
+            mitre.setdefault(t["technique"], t)
+    details = {"change": f"bulk_{kind}", "dir": folder, "count": len(members),
+               "files": [m[1] for m in members[:MAX_BULK_LISTED]],
+               "truncated": len(members) > MAX_BULK_LISTED}
+    if mitre:
+        details["mitre"] = list(mitre.values())
+    emit_alert(Alert(
+        type="intrusion", severity=sev,
+        title=f"File integrity: {len(members)} files {PLURAL[kind]} under {folder}",
+        detector="aide",
+        description=(f"AIDE file integrity check: {len(members)} files {PLURAL[kind]} under {folder}. "
+                     f"Grouped into one alert; the full list is in details.files."),
+        details=details))
 
 
 def committed_version(path: str) -> str | None:
@@ -152,23 +189,44 @@ def run() -> int:
     # tells us which case we're in.
     entries = parse_report(proc.stdout)
 
-    n = 0
+    items = []                     # (kind, path, severity, git commit)
     for kind, path in entries:
         sev = severity_for(path)
-        verb = {"added": "appeared", "removed": "was removed", "changed": "changed"}[kind]
         commit = committed_version(path) if kind != "removed" and sev == "critical" else None
+        items.append((kind, path, "normal" if commit else sev, commit))
+
+    # An entry a suppression rule would hide is always emitted on its own so the rule keeps
+    # working (a grouped title would not match it).
+    from suppressions import find_match
+    groups: dict = {}
+    singles = []
+    for it in items:
+        kind, path, sev, _ = it
+        if find_match(_record(kind, path, sev)):
+            singles.append(it)
+        else:
+            groups.setdefault((kind, sev, "/".join(path.split("/")[:4])), []).append(it)
+
+    n = 0
+    for (kind, sev, folder), members in groups.items():
+        if len(members) > AIDE_BULK_THRESHOLD:
+            _emit_group(kind, sev, folder, members)
+            n += 1
+        else:
+            singles += members
+
+    for kind, path, sev, commit in singles:
         details = {"path": path, "change": kind}
         note = ""
         if commit:
-            sev = "normal"
             details["git_commit"] = commit
             note = (f" The file matches its last commit ({commit}), so this is a committed edit; "
                     "review that commit if you did not make it.")
         emit_alert(Alert(
             type="intrusion", severity=sev,
-            title=f"File integrity: {path} {verb}",
+            title=f"File integrity: {path} {VERB[kind]}",
             detector="aide",
-            description=(f"AIDE file integrity check: {path} {verb} unexpectedly. "
+            description=(f"AIDE file integrity check: {path} {VERB[kind]} unexpectedly. "
                          f"See /etc/aide/aide.conf.d/90_sentinel_soc for what's watched.{note}"),
             details=details,
         ))

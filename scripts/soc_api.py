@@ -20,7 +20,7 @@ not a single shared token: every key has a "role" of "read" (GET only) or
 key's user, not a client-supplied field.
 """
 from __future__ import annotations
-import json, os, secrets, threading
+import json, os, secrets, socket, threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs, unquote
@@ -138,6 +138,11 @@ class Handler(BaseHTTPRequestHandler):
         if not key:
             return self._send(401, {"error": "unauthorized",
                                     "hint": "send header: Authorization: Bearer <token>"})
+        if path == "/api/self":
+            # this appliance's own addresses: an alert whose source_ip is one of these was raised
+            # by the Kali itself (its scans, its feed refreshes), not by another machine
+            return self._send(200, {"hostname": socket.gethostname(),
+                                    "addresses": [{"ip": ip, "interface": ifc} for ip, ifc in sorted(soc_core.own_ips().items())]})
         if path == "/api/summary":
             return self._send(200, soc_core.summarize())
         if path == "/api/alerts":

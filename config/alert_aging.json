@@ -1,14 +1,56 @@
 {
   "rules": [
-    {"id": "port-changes", "after_days": 3,
-     "match": {"detector": "kali_scan", "title_regex": "^NEW open port", "severity": ["normal", "medium"]}},
-    {"id": "no-longer-detected", "after_days": 3,
-     "match": {"detector": "kali_scan", "title_regex": "^No longer detected"}},
-    {"id": "randomized-wifi-macs", "after_days": 3,
-     "match": {"detector": "arp_discovery", "severity": "normal"}},
-    {"id": "routine-logins", "after_days": 2,
-     "match": {"detector": "login_monitor", "severity": "normal"}},
-    {"id": "service-recoveries", "after_days": 2,
-     "match": {"detector": "service_watchdog", "severity": "normal"}}
+    {
+      "id": "port-changes",
+      "after_days": 3,
+      "match": {
+        "detector": "kali_scan",
+        "title_regex": "^NEW open port",
+        "severity": [
+          "normal",
+          "medium"
+        ]
+      }
+    },
+    {
+      "id": "no-longer-detected",
+      "after_days": 3,
+      "match": {
+        "detector": "kali_scan",
+        "title_regex": "^No longer detected"
+      }
+    },
+    {
+      "id": "randomized-wifi-macs",
+      "after_days": 3,
+      "match": {
+        "detector": "arp_discovery",
+        "severity": "normal"
+      }
+    },
+    {
+      "id": "routine-logins",
+      "after_days": 2,
+      "match": {
+        "detector": "login_monitor",
+        "severity": "normal"
+      }
+    },
+    {
+      "id": "service-recoveries",
+      "after_days": 2,
+      "match": {
+        "detector": "service_watchdog",
+        "severity": "normal"
+      }
+    },
+    {
+      "id": "aide-normal",
+      "after_days": 3,
+      "match": {
+        "detector": "aide",
+        "severity": "normal"
+      }
+    }
   ]
 }

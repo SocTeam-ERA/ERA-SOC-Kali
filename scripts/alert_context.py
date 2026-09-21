@@ -212,9 +212,49 @@ def _epoch(record: Dict[str, Any]) -> float:
         return time.time()
 
 
+# What alert.source_ip means. "actor": the party that caused the activity (the scanner, the
+# attacker, the login source). "asset": the host the alert is about (the scanned or
+# monitored device, or an internal host whose traffic was flagged); the other side, if any,
+# is in details (dst, ioc_ip, ...). A detector can set details.source_role itself; this is the
+# default per detector.
+_ROLE_BY_DETECTOR = {
+    "login_monitor": "actor",
+    "kali_scan": "asset", "arp_discovery": "asset", "port_scanner": "asset", "nikto": "asset",
+    "whatweb": "asset", "osquery": "asset", "vlan_segmentation": "asset",
+    "phishing_detector": "actor", "malware_detector": "asset",
+}
+
+
+def source_role(record: Dict[str, Any]) -> Optional[str]:
+    if not record.get("source_ip"):
+        return None
+    detector = record.get("detector")
+    if detector in ("suricata", "zeek"):
+        # an internal host talking to the internet is the asset; anything else is the actor
+        d = record.get("details") or {}
+        dst = d.get("dst") or d.get("dest_ip")
+        if dst is None and detector == "suricata":
+            m = _ARROW.search(record.get("title") or "")
+            dst = m.group(2) if m else None
+        try:
+            if ipaddress.ip_address(record["source_ip"]).is_private and dst and ipaddress.ip_address(dst).is_global:
+                return "asset"
+        except ValueError:
+            pass
+        return "actor"
+    return _ROLE_BY_DETECTOR.get(detector)
+
+
 def add_context(record: Dict[str, Any]) -> None:
-    """Set details.entities / group_key / batch_id on the alert record in place."""
+    """Set details.entities / group_key / batch_id / source_role on the alert record in place."""
     details = record.setdefault("details", {})
+    src = record.get("source_ip")
+    if src and src in soc_core.own_ips():
+        details["source_is_self"] = True     # the alert's source_ip is one of this appliance's own addresses
+    if "source_role" not in details:
+        role = source_role(record)
+        if role:
+            details["source_role"] = role
     if "entities" not in details:
         ents = entities(record)
         if ents:

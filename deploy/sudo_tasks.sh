@@ -14,7 +14,8 @@
 #      An exclusion does not remove files already recorded in the database, so this
 #      is what makes it take full effect. It also accepts the system's CURRENT state
 #      as the new baseline, so only do it when the machine is in a state you trust.
-#      Observed here: `aide --init` writes straight to aide.db (not aide.db.new).
+#      `aide --init` writes the new database to aide.db.new; the script then moves it over
+#      aide.db (the old one was copied aside first), otherwise nothing would use it.
 #
 #  Excluded paths, and why:
 #    /var/lib/apt, /var/lib/PackageKit, /var/lib/rpm, /var/lib/command-not-found
@@ -70,8 +71,12 @@ if [[ "${1:-}" == "--reinit-aide" ]]; then
   [[ -f "$DB" ]] && cp -a "$DB" "$DB.pre-reinit.$STAMP" && echo "[2/2] database copy: $DB.pre-reinit.$STAMP"
   echo "[2/2] running aide --init (about 30 minutes; safe to leave running)..."
   time aide --config="$MAIN" --init
+  if [[ -s "$DB.new" && ( ! -e "$DB" || "$DB.new" -nt "$DB" ) ]]; then
+    mv -f "$DB.new" "$DB"
+    echo "[2/2] the new database is now active: $DB"
+  fi
   ls -la --time-style=full-iso "$DB" "$DB.new" 2>/dev/null || true
-  echo "[2/2] done. If aide.db is not newer than the copy above, look for aide.db.new and move it over aide.db."
+  echo "[2/2] done. The previous database is kept as $DB.pre-reinit.$STAMP."
 else
   echo "[2/2] skipped (add --reinit-aide to rebuild the database so the exclusions fully apply)."
 fi

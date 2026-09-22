@@ -8,7 +8,7 @@ Lista acumulada durante la sesión de hoy, para retomar mañana.
 - [ ] Cuando algún manager necesite ver el dashboard desde fuera de la oficina, la vía decidida es VPN (no exponerlo públicamente). Falta elegir/armar esa VPN y dar de alta a los managers que la necesiten.
 
 ## Si algún día se decide exponerlo fuera de la VPN (no urgente por ahora)
-- [ ] Confirmar que los endpoints de escritura (`POST /api/alerts/<id>/status`, `POST /api/assets/<mac>/notes`) exigen key `write` sin excepción, y que nada queda accesible sin auth por depender de estar en red interna. (El código de `soc_api.py` ya lo hace bien — solo confirmarlo de nuevo tras cualquier cambio antes de exponer.)
+- [x] **Reconfirmado (2026-09-22) con el código actual, mucho más grande que cuando se escribió esto:** `do_POST` y `do_DELETE` revisan la llave y el rol `write` **una sola vez, al inicio**, antes de mirar qué ruta es — así que una ruta nueva no puede "olvidarse" de la autenticación. Repasadas todas: las 15 de `do_GET`, las 5 de `do_POST` y las 2 de `do_DELETE` (incluidas las de hoy: watchlists, descarga de pcap). Todas caen detrás del candado salvo `/api/health` (sin datos sensibles, a propósito). Sigue siendo cierto que esto solo importa el día que se decida exponer fuera de la VPN — hoy no es explotable desde fuera.
 - [ ] Decidir cómo va a autenticarse el dashboard contra la API sin exponer una key de escritura en el JS público (cualquiera con devtools la vería si se hace ingenuamente).
 - [ ] Configurar `SOC_API_CORS` si el dashboard y la API terminan sirviéndose desde orígenes distintos detrás del túnel.
 

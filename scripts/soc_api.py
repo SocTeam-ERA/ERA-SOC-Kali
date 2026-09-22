@@ -23,6 +23,7 @@ from __future__ import annotations
 import json, os, secrets, socket, threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import urlparse, parse_qs, unquote
 import soc_core
 import correlate
@@ -44,6 +45,11 @@ CORS = os.environ.get("SOC_API_CORS", "").strip()
 MAX_BODY_SIZE = 65536
 
 API_KEYS = {k["token"]: k for k in soc_core.load_api_keys()}
+
+# Only a packet capture actually resolving under this exact directory is ever served --
+# GET /api/alerts/<id>/pcap takes an alert id, never a path, specifically so a caller can't
+# ask this endpoint to read an arbitrary file off the appliance.
+PCAP_DIR = (Path(__file__).resolve().parent.parent / "kali" / "results" / "flagged_captures").resolve()
 
 # Searches read big log files; each runs in its own limited child process and at
 # most this many run at once, so nobody can saturate the disk by hammering /api/search.
@@ -94,6 +100,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", CORS)
             self.send_header("Access-Control-Allow-Headers", "Authorization")
         self.end_headers(); self.wfile.write(body)
+    def _send_file(self, path, download_name):
+        size = path.stat().st_size
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.tcpdump.pcap")
+        self.send_header("Content-Length", str(size))
+        self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+        if CORS:
+            self.send_header("Access-Control-Allow-Origin", CORS)
+            self.send_header("Access-Control-Allow-Headers", "Authorization")
+        self.end_headers()
+        with path.open("rb") as fh:
+            while True:
+                chunk = fh.read(1 << 20)
+                if not chunk:
+                    break
+                self.wfile.write(chunk)
     def _read_json_body(self):
         """Parse a small JSON request body. Returns (body, None) or (None, (code, error payload))."""
         try:
@@ -237,6 +259,23 @@ class Handler(BaseHTTPRequestHandler):
             print(f"[*] {key['user']} searched {params.get('source')} q={params.get('q', '')[:60]!r}"
                   f" -> {result['count']} result(s), {result['elapsed_ms']} ms")
             return self._send(200, result)
+        if path.startswith("/api/alerts/") and path.endswith("/pcap"):
+            aid = path[len("/api/alerts/"):-len("/pcap")]
+            alert = next((a for a in soc_core._load_snapshot() if a.get("id") == aid), None)
+            if alert is None:
+                return self._send(404, {"error": "alert not found", "id": aid})
+            pcap = (alert.get("details") or {}).get("pcap")
+            if not pcap:
+                return self._send(404, {"error": "this alert has no packet capture"})
+            try:
+                resolved = Path(pcap).resolve()
+                resolved.relative_to(PCAP_DIR)  # raises ValueError if pcap escapes the capture directory
+                if not resolved.is_file():
+                    raise FileNotFoundError
+            except (OSError, ValueError):
+                return self._send(404, {"error": "capture file not found on this appliance"})
+            print(f"[*] {key['user']} downloaded the capture for alert {aid}")
+            return self._send_file(resolved, resolved.name)
         if path.startswith("/api/alerts/"):
             aid = path.rsplit("/", 1)[-1]
             for a in soc_core._load_snapshot():

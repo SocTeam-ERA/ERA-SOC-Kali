@@ -216,3 +216,11 @@ Sin commitear al momento de escribir esto. Probado en directorio temporal, con u
 - [x] Nuevos endpoints: `GET /api/watchlists`, `GET /api/watchlists/<nombre>`, `POST /api/watchlists/<nombre>` (agregar, cuerpo `{"entry": "..."}`), `DELETE /api/watchlists/<nombre>?entry=...` — solo con llave de escritura.
 - [x] Probado en aislado (validación, duplicados, borrado, permisos de lectura/escritura) y contra un servidor de API real en un directorio temporal; `soc_selftest.py --isolated` sigue en 89/89.
 - [ ] Pendiente (frontend, Sixto): una vista para administrar las watchlists desde el dashboard, cuando tenga tiempo.
+
+## 2026-09-22 (tarde) — endpoint de descarga de pcap
+- [x] Nuevo `GET /api/alerts/<id>/pcap`: descarga la captura completa (`details.pcap`) de una alerta de `traffic_capture`, para abrirla en Wireshark fuera de la Kali.
+- [x] Por seguridad, el endpoint recibe el **id de la alerta**, nunca una ruta; internamente resuelve `details.pcap` y confirma que el archivo real quede dentro de `kali/results/flagged_captures/` antes de servirlo — así un llamador no puede pedir un archivo arbitrario del equipo. Probado con un intento de path traversal (archivo fuera del directorio de capturas): rechazado con 404, igual que un archivo que no existe o una alerta sin captura.
+- [x] Requiere llave de API válida (lectura o escritura); sin autenticación, 401.
+- [x] Archivo servido en streaming (hasta 42 MB hoy), no se carga completo en memoria.
+- [x] Probado con datos reales contra un servidor de API aislado; `soc_selftest.py --isolated` sigue en 89/89.
+- [ ] Pendiente (frontend, Sixto): botón de descarga en el dashboard cuando `details.pcap` esté presente, apuntando a este endpoint — ya no hace falta ocultarlo como se dijo antes, ahora sí es descargable.

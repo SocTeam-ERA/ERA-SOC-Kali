@@ -253,3 +253,17 @@ Sin commitear al momento de escribir esto. Probado en directorio temporal, con u
 - [x] Aplica tanto a `port_state.json` como a `udp_state.json` (mismo código, `nmap_to_alerts.py --diff-state`).
 - [x] Probado con casos aislados (reciente, 120 días, 89 días, sin fecha) y con la autoprueba completa (117/117).
 - [ ] Efecto: hoy no borra nada (los datos más viejos del proyecto son de apenas el 5 de septiembre), es prevención de crecimiento a futuro, no una limpieza inmediata.
+
+## 2026-09-22 (tarde) — backlog de endurecimiento de Lynis (50 hallazgos)
+- [x] Revisé los 6 avisos y 44 sugerencias del último reporte de Lynis (00:08 de hoy) y los separé en tres grupos.
+- [x] **Ya está bien así (sin acción):** los 6 avisos "Found promiscuous interface" (`eth0`-`eth5`) — es intencional, Zeek/Suricata/el monitor de tráfico necesitan modo promiscuo para ver todo el tráfico, no solo el dirigido a esta máquina. Permisos de `/home/adelcueto` ya son 700 (más estrictos de lo que pide Lynis). Apache y PHP están instalados pero **inactivos** (nada los usa hoy); no toqué su configuración porque no corren, pero si de verdad no hacen falta se podrían desinstalar más adelante.
+- [x] **Nuevo script `deploy/lynis_hardening.sh`** (como `sudo_tasks.sh`, con `sudo`): instala 5 paquetes chicos de mantenimiento (`libpam-tmpdir`, `apt-listbugs`, `needrestart`, `debsums`, `apt-show-versions`), purga la configuración de 1 paquete ya desinstalado y de `atftpd` (servidor TFTP, inactivo pero sin motivo para tenerlo — se dejó `tftp-hpa`, el cliente, porque sí sirve para la fase de pentesting más adelante), bloquea 4 protocolos de red que nadie usa aquí (`dccp`, `sctp`, `rds`, `tipc`), activa la contabilidad de procesos (`acct`, más rastro forense) y le dice a Lynis que las interfaces promiscuas son esperadas, para que el reporte diario deje de repetir ese aviso.
+- [ ] **Pendiente tuyo, con sudo:** `sudo bash /opt/sentinel-soc/deploy/lynis_hardening.sh`.
+- [ ] **Decisiones que te tocan a ti, no las metí en el script porque tienen algún costo o compromiso real:**
+  - Contraseña de GRUB (podría dejarte fuera del modo de recuperación si se hace mal).
+  - Cambiar SSH del puerto 22 — Lynis lo sugiere, pero es "seguridad por oscuridad", no una mejora real, y complica tu acceso actual. Yo no lo haría.
+  - Banner legal en `/etc/issue` / `/etc/issue.net` — necesita un texto aprobado (tuyo o de IT/legal), no lo puedo inventar.
+  - Restringir compiladores (`gcc`) solo a root — chocaría con la Etapa 2 (vas a compilar/armar herramientas de pentesting).
+  - Deshabilitar almacenamiento USB/firewire — el Flipper Zero y la Pineapple planeados para la Etapa 2 lo necesitan.
+  - Política de contraseñas en `/etc/login.defs` (vencimiento, edad mínima, `umask`) — afecta tu propia sesión, mejor que la confirmes tú.
+  - Cambiar el algoritmo de hash de AIDE a SHA-256 — implicaría otro `--reinit-aide` (~30 min); se puede hacer, pero mejor programarlo aparte y no encima de todo lo de hoy.

@@ -30,24 +30,18 @@ Usage:
     python3 dhcp_to_assets.py --follow                 # continuous (systemd)
 """
 from __future__ import annotations
-import argparse, json, os, sys
+import argparse, os, sys
 from pathlib import Path
 
 SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
 from soc_core import record_dhcp_hostnames, tail_follow  # noqa: E402
+from zeek_tsv import ZeekTSVReader, read_current_header  # noqa: E402
 
 DEFAULT_LOG = Path("/opt/zeek/logs/current/dhcp.log")
 
 
-def _extract(line: str) -> dict | None:
-    line = line.strip()
-    if not line:
-        return None
-    try:
-        row = json.loads(line)
-    except json.JSONDecodeError:
-        return None
+def _extract(row: dict) -> dict | None:
     mac = row.get("mac")
     hostname = row.get("host_name") or row.get("client_fqdn")
     if not mac or not hostname:
@@ -56,12 +50,21 @@ def _extract(line: str) -> dict | None:
 
 
 def process_file(path: Path, follow: bool) -> int:
+    reader = ZeekTSVReader()
     if follow:
+        # Prime the column layout from the log's CURRENT header before tailing from the
+        # end (see zeek_tsv.read_current_header): without this, a service that starts
+        # mid-hour stays blind to dhcp.log until the next hourly rotation hands it a
+        # fresh #fields line on its own.
+        header = read_current_header(path)
+        if header:
+            reader.feed(header)
         # tail_follow() survives zeekctl's own log rotation, same as the
         # other Zeek-log consumers (zeek_to_alerts.py) -- see its docstring.
         n = 0
         for line in tail_follow(path, from_start=False):
-            sighting = _extract(line)
+            row = reader.feed(line)
+            sighting = _extract(row) if row else None
             if sighting and record_dhcp_hostnames([sighting]):
                 n += 1
         return n
@@ -69,7 +72,8 @@ def process_file(path: Path, follow: bool) -> int:
     sightings = []
     with path.open(errors="ignore") as fh:
         for line in fh:
-            sighting = _extract(line)
+            row = reader.feed(line)
+            sighting = _extract(row) if row else None
             if sighting:
                 sightings.append(sighting)
     n = record_dhcp_hostnames(sightings)

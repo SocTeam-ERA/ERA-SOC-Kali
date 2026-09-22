@@ -1036,6 +1036,63 @@ def record_dhcp_hostnames(sightings: list) -> int:
     return changed
 
 
+def build_ip_to_mac_map() -> Dict[str, str]:
+    """{ip: mac} from the asset inventory (data/assets.json, kept fresh by
+    arp_to_alerts.py on every scan cycle). Shared by every detector that
+    only ever sees an IP (nmap's XML output, Zeek's software.log keyed by
+    `host`) but needs to enrich or track a MAC-keyed record -- MAC is the
+    stable identity on a DHCP network; an IP alone gets reassigned.
+
+    Moved here 2026-09-22 from kali/nmap_to_alerts.py (still re-exported
+    there for compatibility) so kali/software_to_assets.py could use the
+    exact same mapping instead of a second, potentially inconsistent copy.
+    """
+    out: Dict[str, str] = {}
+    for mac, rec in load_assets().items():
+        ip = rec.get("ip")
+        if ip:
+            out[ip] = mac
+    return out
+
+
+def record_asset_software(sightings: list) -> int:
+    """Enrich EXISTING asset records with software Zeek fingerprinted on one of their
+    ports (its software framework: DHCP vendor class, HTTP Server/User-Agent, SSH
+    version banners, ... -- see kali/software_to_assets.py). Often the only way to tell
+    an embedded device's actual make/model apart from the generic chip-vendor MAC
+    lookup, without ever running an active OS-detection scan (`nmap -O`).
+
+    Never creates a new asset record, same reasoning as record_dhcp_hostnames(): the
+    caller resolves Zeek's IP-keyed sighting to a MAC via build_ip_to_mac_map() first,
+    so a host this project has no independently-confirmed asset record for is already
+    filtered out before it gets here. Each sighting is {"mac", "software_type", "name",
+    "version"} ("version" is the free-form string Zeek parsed, e.g. "2.2.17", or None).
+    Keyed by software_type (a MAC can run more than one fingerprinted service, e.g. its
+    own embedded HTTP admin page AND an SSH daemon) -- a repeat sighting of the same
+    type just refreshes name/version/last_seen in place. Returns how many asset records
+    actually changed.
+    """
+    now = datetime.now(timezone.utc).isoformat()
+    changed = 0
+    with diff_state_lock(ASSETS_FILE):
+        assets = load_assets()
+        for s in sightings:
+            mac = s["mac"]
+            rec = assets.get(mac)
+            if rec is None:
+                continue
+            software = rec.setdefault("software", {})
+            prev = software.get(s["software_type"])
+            if prev and prev.get("name") == s["name"] and prev.get("version") == s.get("version"):
+                continue  # identical to what's already recorded -- no need to rewrite last_seen
+            software[s["software_type"]] = {"name": s["name"], "version": s.get("version"), "last_seen": now}
+            assets[mac] = rec
+            changed += 1
+        if changed:
+            _save_assets(assets)
+    return changed
+
+
 def set_asset_annotation(mac: str, *, owner: Optional[str] = None,
                           notes: Optional[str] = None,
                           authorized: Optional[bool] = None,

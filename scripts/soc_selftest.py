@@ -223,6 +223,63 @@ def inner() -> int:
     bulk = find(wave_alerts, "new device(s) on VLAN")
     check("a wave of 8 new devices becomes ONE grouped alert", bulk is not None and len(wave_alerts) == 1 and bulk["details"]["count"] == 8)
 
+    # ---- (added) asset enrichment: Zeek TSV parsing, DHCP hostnames, software fingerprints ----
+    group("asset enrichment")
+    import zeek_tsv
+    r = zeek_tsv.ZeekTSVReader()
+    check("a data row before any header is dropped", r.feed("2026\tfoo\tbar") is None and not r.ready)
+    check("a #fields header is recognized and not returned as data", r.feed("#fields\tts\thost\tname") is None and r.ready)
+    check("a data row after the header is parsed into a dict",
+          r.feed("123.0\t10.0.0.5\tGoAhead-Webs") == {"ts": "123.0", "host": "10.0.0.5", "name": "GoAhead-Webs"})
+    check("Zeek's unset marker '-' becomes None", r.feed("123.0\t-\tfoo") == {"ts": "123.0", "host": None, "name": "foo"})
+    check("a #types/#open/#close comment line is ignored", r.feed("#types\ttime\taddr\tstring") is None)
+    check("a malformed row (wrong column count) is dropped, not misaligned", r.feed("123.0\tonly-two") is None)
+
+    hdr_file = tmp / "hdr_test.log"
+    hdr_file.write_text("#separator \\x09\n#fields\tts\thost\n#types\ttime\taddr\n1.0\t10.0.0.9\n")
+    check("read_current_header finds the #fields line of a real file",
+          zeek_tsv.read_current_header(hdr_file) == "#fields\tts\thost")
+    no_hdr = tmp / "no_header.log"; no_hdr.write_text("just data, no header\n")
+    check("read_current_header returns None when there is no header", zeek_tsv.read_current_header(no_hdr) is None)
+
+    ipmap = soc_core.build_ip_to_mac_map()
+    check("build_ip_to_mac_map reflects the asset inventory", ipmap.get("10.69.9.1") == "3c:bb:cc:00:00:01")
+
+    changed = soc_core.record_asset_software([{"mac": "3c:bb:cc:00:00:01", "software_type": "HTTP::SERVER",
+                                               "name": "GoAhead-Webs", "version": "GoAhead-Webs"}])
+    check("record_asset_software enriches an existing asset", changed == 1
+          and soc_core.load_assets()["3c:bb:cc:00:00:01"]["software"]["HTTP::SERVER"]["name"] == "GoAhead-Webs")
+    changed = soc_core.record_asset_software([{"mac": "3c:bb:cc:00:00:01", "software_type": "HTTP::SERVER",
+                                               "name": "GoAhead-Webs", "version": "GoAhead-Webs"}])
+    check("...and an identical repeat sighting is a no-op", changed == 0)
+    changed = soc_core.record_asset_software([{"mac": "00:00:00:00:00:99", "software_type": "HTTP::SERVER",
+                                               "name": "x", "version": None}])
+    check("record_asset_software never creates a new asset record",
+          changed == 0 and "00:00:00:00:00:99" not in soc_core.load_assets())
+
+    import dhcp_to_assets as DA
+    dhcp_log = tmp / "dhcp_test.log"
+    dhcp_log.write_text(
+        "#separator \\x09\n#fields\tts\tmac\thost_name\tclient_fqdn\n#types\ttime\tstring\tstring\tstring\n"
+        "1.0\t3c:bb:cc:00:00:02\tMYPRINTER\t-\n"
+        "2.0\taa:aa:aa:aa:aa:aa\tGHOST\t-\n")  # not a known asset -- must be skipped
+    n = DA.process_file(dhcp_log, follow=False)
+    check("dhcp_to_assets parses the real Zeek TSV format and enriches a known asset (regression: "
+          "this used to json.loads() a TSV line and silently enrich nothing, ever)",
+          n == 1 and soc_core.load_assets()["3c:bb:cc:00:00:02"].get("dhcp_hostname") == "MYPRINTER")
+
+    import software_to_assets as SA
+    sw_log = tmp / "software_test.log"
+    sw_log.write_text(
+        "#separator \\x09\n#fields\tts\thost\thost_p\tsoftware_type\tname\tunparsed_version\n"
+        "#types\ttime\taddr\tport\tenum\tstring\tstring\n"
+        "1.0\t10.69.9.3\t22\tSSH::SERVER\tOpenSSH\tOpenSSH_9.1\n"
+        "2.0\t203.0.113.9\t80\tHTTP::SERVER\tnginx\tnginx/1.18\n")  # not a known asset -- must be skipped
+    n = SA.process_file(sw_log, follow=False)
+    check("software_to_assets resolves IP to MAC via the asset inventory and enriches a known asset",
+          n == 1 and soc_core.load_assets()["3c:bb:cc:00:00:03"]["software"]["SSH::SERVER"]["version"] == "OpenSSH_9.1")
+
+
     # ---- nmap ----------------------------------------------------------------
     group("nmap")
     import nmap_to_alerts as N

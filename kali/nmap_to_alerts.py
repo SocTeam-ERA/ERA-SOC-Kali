@@ -38,7 +38,7 @@ from pathlib import Path
 # make soc_core importable
 SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
-from soc_core import Alert, emit_alert, diff_state_lock, load_assets  # noqa: E402
+from soc_core import Alert, emit_alert, diff_state_lock, load_assets, build_ip_to_mac_map  # noqa: E402
 
 HIGH_RISK_PORTS = {21, 23, 135, 139, 445, 1433, 3306, 3389, 5432, 5900, 6379, 27017, 9200}
 
@@ -384,27 +384,6 @@ def emit_host_group(ip: str, events: list, hostname, baseline: set) -> None:
         description=(f"{len(members)} ports that were NOT open in the previous scan are now open on {ip}: {shown}{more}. "
                      "Grouped into one alert instead of one row per port; the full list is in details.ports."),
         details=details))
-
-
-def build_ip_to_mac_map() -> dict[str, str]:
-    """{ip: mac} from the asset inventory (data/assets.json, kept fresh by
-    arp_to_alerts.py on every scan cycle, right before nmap runs).
-
-    Confirmed 2026-09-18: keying port-tracking state by IP alone breaks down
-    on a DHCP network -- the same physical device gets a new IP and looks
-    "brand new" (every one of its normal ports floods in as "new"), and an
-    old IP handed to a different device looks like "the same host" changed.
-    MAC is the far more stable identity for a real device (excluding
-    intentionally-randomized Wi-Fi MACs, which aren't port-scanned at all --
-    see scheduled_scan.sh's Guest WiFi exclusion -- so this doesn't need to
-    handle that case).
-    """
-    out: dict[str, str] = {}
-    for mac, rec in load_assets().items():
-        ip = rec.get("ip")
-        if ip:
-            out[ip] = mac
-    return out
 
 
 def device_key(ip: str, ip_to_mac: dict[str, str]) -> str:

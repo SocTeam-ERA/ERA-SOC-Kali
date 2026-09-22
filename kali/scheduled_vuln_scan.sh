@@ -29,4 +29,29 @@ if [ -z "$LATEST" ] || [ ! -s "$LATEST" ]; then
   exit 1
 fi
 log "Using live hosts from: $LATEST (Guest WiFi already excluded)"
-exec "$(dirname "$0")/3_vuln_scan.sh" "$LATEST"
+
+# Captures the XML report path 3_vuln_scan.sh echoes as its last line (the same
+# convention 0_run_all.sh uses for a manual run), while `tee /dev/fd/2` still
+# streams everything -- the batch progress, nikto/whatweb output -- to the
+# journal via stderr. This used to be `exec 3_vuln_scan.sh ...`, which replaced
+# this whole process, so nothing was left running to read that path: the vuln
+# scan's own findings (the 'vuln'/ftp-anon/http-default-accounts/ssl-* category
+# -- this job's entire reason to exist) were produced as a report file and then
+# never turned into an alert. Confirmed 2026-09-22: 3_vuln_scan.sh only calls
+# nmap_to_alerts.py itself for the separate SNMP check; the main vuln-category
+# XML has always relied on a caller doing that afterward, same as
+# SERVICES_XML/VULN_XML in 0_run_all.sh -- this script was never that caller.
+VULN_XML="$("$(dirname "$0")/3_vuln_scan.sh" "$LATEST" | tee /dev/fd/2 | tail -n1)"
+if [[ ! -s "$VULN_XML" ]]; then
+  err "3_vuln_scan.sh produced no XML report -- nothing to import"
+  exit 1
+fi
+log "Importing vulnerability findings into the SOC feed: $VULN_XML"
+# Same --diff-state file the regular scheduled_scan.sh uses (not the manual
+# run's port_state_manual.json): the *_vulns state it derives from that path
+# is what makes "No longer detected" work instead of re-alerting every finding
+# every week, and it should be the SAME lineage the rest of the automated
+# pipeline already tracks, not a second, disconnected one.
+python3 "$(dirname "$0")/nmap_to_alerts.py" "$VULN_XML" \
+    --baseline 22,443 \
+    --diff-state /opt/sentinel-soc/data/port_state.json

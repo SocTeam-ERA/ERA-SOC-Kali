@@ -246,3 +246,10 @@ Sin commitear al momento de escribir esto. Probado en directorio temporal, con u
 - [x] Al revisar las 4 alertas críticas abiertas, las 4 eran las alertas de demostración de hoy (`test: true`), no algo real. Se resolvieron con nota.
 - [x] Encontrado de paso: ni `soc_views.py` (riesgo por entidad, `/api/metrics`, `/api/detections`) ni `soc_core.summarize()` (`/api/summary`) excluían las alertas de prueba de sus conteos — una alerta de prueba podía subir el riesgo de una IP, inflar el conteo de "críticas abiertas" o aparecer en la actividad por detector. Corregido en los tres lugares: se descartan antes de calcular cualquier cifra. La lista cruda (`/api/alerts`, lo que alimenta la pestaña Test) no se tocó — ahí sí deben seguir apareciendo.
 - [ ] Pendiente, no urgente: confirmar con Sixto si `/api/summary` (usado hoy para "total" y "by_severity") debe incluir también las alertas ya resueltas o solo las abiertas — hoy cuenta todas, sin filtrar por estado (fuera del alcance de este arreglo, que solo quitó las de prueba).
+
+## 2026-09-22 (tarde) — poda de dispositivos viejos en port_state.json / udp_state.json
+- [x] Antes: `nmap_to_alerts.py` nunca borraba la entrada completa de un equipo, aunque desapareciera de la red para siempre (reemplazado, dado de baja) — a propósito, para no perder el historial de un equipo que solo faltó a un par de escaneos (dormido, apagado un rato). Pero eso significa que el archivo de estado solo crece, sin límite.
+- [x] Ahora, además de eso, si un equipo lleva **más de 90 días** sin aparecer en ningún escaneo, se elimina su entrada completa (`SOC_HOST_RETENTION_DAYS`, configurable). Un equipo que sí aparece en el escaneo actual nunca se toca, sin importar qué tan vieja se vea su información.
+- [x] Aplica tanto a `port_state.json` como a `udp_state.json` (mismo código, `nmap_to_alerts.py --diff-state`).
+- [x] Probado con casos aislados (reciente, 120 días, 89 días, sin fecha) y con la autoprueba completa (117/117).
+- [ ] Efecto: hoy no borra nada (los datos más viejos del proyecto son de apenas el 5 de septiembre), es prevención de crecimiento a futuro, no una limpieza inmediata.

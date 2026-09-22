@@ -493,6 +493,34 @@ def _run_vulns(vulns: list, diff_state: Path | None) -> int:
 PORT_QUIET_HOURS = float(os.environ.get("SOC_PORT_QUIET_HOURS", "24"))
 SEEN_RETENTION_DAYS = 14
 
+# A host absent from the current scan keeps its whole entry untouched (see the
+# "merge into the previous state" comment below) -- deliberately, so a laptop
+# asleep for a few scans doesn't lose its port history. But nothing ever removes
+# a host that is gone for GOOD (decommissioned, replaced, moved off this network),
+# so the state file only ever grows. This is a separate, much longer window than
+# SEEN_RETENTION_DAYS: it drops the entry entirely, so if that device ever comes
+# back every one of its ports looks "new" again -- worth avoiding for a routine
+# short absence, acceptable once a host has been gone this long.
+HOST_RETENTION_DAYS = float(os.environ.get("SOC_HOST_RETENTION_DAYS", "90"))
+
+
+def _prune_stale_hosts(state: dict, touched: set, now: datetime) -> int:
+    removed = 0
+    for key in [k for k in state if k not in touched]:
+        seen = state[key].get("seen") or {}
+        last = None
+        for t in seen.values():
+            try:
+                ts = datetime.fromisoformat(t)
+            except ValueError:
+                continue
+            if last is None or ts > last:
+                last = ts
+        if last is None or (now - last).days >= HOST_RETENTION_DAYS:
+            del state[key]
+            removed += 1
+    return removed
+
 
 def _seen_recently(iso: str | None, now: datetime) -> bool:
     if not iso:
@@ -614,6 +642,12 @@ def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
                 closed_c += 1
             new_state[key] = {"ip": ip, "ports": {k: v["service"] for k, v in ports.items()},
                               "seen": _update_seen(prev_seen, ports, now)}
+
+        touched = {device_key(ip, ip_to_mac) for ip in current}
+        pruned_hosts = _prune_stale_hosts(new_state, touched, now)
+        if pruned_hosts:
+            print(f"[*] Pruned {pruned_hosts} host(s) not seen in over {HOST_RETENTION_DAYS:g} days "
+                  f"from {diff_state.name}")
 
         _save_state(diff_state, new_state)
 

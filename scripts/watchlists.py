@@ -28,7 +28,11 @@ from typing import Any, Dict, List
 
 SUITE = Path(__file__).resolve().parent.parent
 DATA_DIR = Path(os.environ.get("SOC_DATA_DIR", SUITE / "data"))
-KALI_DIR = SUITE / "kali"
+# Same override convention every kali/*.py detector already uses (SOC_SCRIPTS for its sibling) --
+# without it, a test running with SOC_DATA_DIR pointed at a throwaway directory would still
+# read and WRITE the real kali/ioc_ips.txt and kali/bad_domains.txt (bad_ips/bad_domains below
+# are the only two watchlists backed by a file under here, not under DATA_DIR).
+KALI_DIR = Path(os.environ.get("SOC_KALI_DIR", SUITE / "kali"))
 LOCK_FILE = DATA_DIR / ".watchlists.lock"
 LOG_FILE = DATA_DIR / "watchlist_log.jsonl"
 

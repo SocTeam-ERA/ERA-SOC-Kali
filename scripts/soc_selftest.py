@@ -492,6 +492,41 @@ def inner() -> int:
     got = new_alerts(n)
     check("4 new ports stay individual", sum(a_["title"].startswith("NEW open port ") for a_ in got) == 4, str([a_["title"] for a_ in got]))
 
+    # ---- (added) watchlists ---------------------------------------------------
+    group("watchlists")
+    import watchlists as W
+    names = {w["name"] for w in W.list_watchlists()}
+    check("all six watchlists are registered", names == {"trusted_ips", "bad_ips", "bad_domains",
+                                                          "bad_hashes", "sensitive_vlans", "untrusted_vlans"}, str(names))
+    before = W.get("trusted_ips")["count"]
+    W.add("trusted_ips", "203.0.113.9/32", "selftest")
+    check("adding a valid CIDR to a watchlist works", W.get("trusted_ips")["count"] == before + 1)
+    try:
+        W.add("trusted_ips", "203.0.113.9/32", "selftest")
+        check("adding the same entry twice is refused", False)
+    except ValueError:
+        check("adding the same entry twice is refused", True)
+    try:
+        W.add("trusted_ips", "not-an-ip", "selftest")
+        check("an invalid entry is refused (per-list validation)", False)
+    except ValueError:
+        check("an invalid entry is refused (per-list validation)", True)
+    W.remove("trusted_ips", "203.0.113.9/32", "selftest")
+    check("removing an entry works", W.get("trusted_ips")["count"] == before)
+    try:
+        W.get("does-not-exist")
+        check("an unknown watchlist name is refused", False)
+    except ValueError:
+        check("an unknown watchlist name is refused", True)
+    log = [json.loads(ln) for ln in soc_core.DATA_DIR.joinpath("watchlist_log.jsonl").read_text().splitlines()]
+    check("the add and remove were audited", sum(1 for e in log if e["entry"] == "203.0.113.9/32") == 2)
+    real_bad_domains = KALI / "bad_domains.txt"
+    real_before = real_bad_domains.read_text() if real_bad_domains.exists() else ""
+    W.add("bad_domains", "totally-fake-selftest-domain.example", "selftest")
+    check("bad_ips/bad_domains (kali/-backed lists) are isolated too, not the real project files",
+          "totally-fake-selftest-domain.example" in W.get("bad_domains")["entries"]
+          and (not real_bad_domains.exists() or real_bad_domains.read_text() == real_before))
+
     # ---- (added) API server with read and write keys ------------------------------
     group("api")
     import socket
@@ -537,6 +572,19 @@ def inner() -> int:
         code, d = _call(f"/api/incidents/{inc_id}", "t-write", "POST", {"comment": "through the API"})
         check("a write key can comment, attributed to its user", code == 200 and d["comments"][-1]["by"] == "writer")
         check("a read-only key cannot create a suppression", _call("/api/suppressions", "t-read", "POST", {"reason": "x"})[0] == 403)
+
+        code, d = _call("/api/watchlists")
+        check("GET /api/watchlists lists all six", code == 200 and {w["name"] for w in d["watchlists"]} ==
+              {"trusted_ips", "bad_ips", "bad_domains", "bad_hashes", "sensitive_vlans", "untrusted_vlans"})
+        code, d = _call("/api/watchlists/trusted_ips")
+        check("GET /api/watchlists/<name> serves one list", code == 200 and d["name"] == "trusted_ips")
+        check("GET on an unknown watchlist name is a 404", _call("/api/watchlists/does-not-exist")[0] == 404)
+        check("a read-only key cannot add to a watchlist",
+              _call("/api/watchlists/trusted_ips", "t-read", "POST", {"entry": "198.51.100.9"})[0] == 403)
+        code, d = _call("/api/watchlists/trusted_ips", "t-write", "POST", {"entry": "198.51.100.9"})
+        check("a write key can add an entry", code == 201 and "198.51.100.9" in d["entries"])
+        code, d = _call("/api/watchlists/trusted_ips?entry=198.51.100.9", "t-write", "DELETE")
+        check("a write key can remove an entry", code == 200 and "198.51.100.9" not in d["updated"]["entries"])
     finally:
         proc.terminate()
         try:
@@ -551,7 +599,7 @@ def inner() -> int:
 def run_isolated() -> None:
     tmp = tempfile.mkdtemp(prefix="soc_selftest_")
     env = {k: v for k, v in os.environ.items() if k not in ("SOC_INGEST_URL", "NTFY_TOPIC", "SOC_SUPPRESSIONS_FILE")}
-    env.update(SOC_DATA_DIR=tmp, SOC_PLAYBOOKS_DRY_RUN="1")
+    env.update(SOC_DATA_DIR=tmp, SOC_KALI_DIR=tmp, SOC_PLAYBOOKS_DRY_RUN="1")
     shutil_assets = DATA / "assets.json"
     if shutil_assets.exists():
         Path(tmp, "assets.json").write_bytes(shutil_assets.read_bytes())

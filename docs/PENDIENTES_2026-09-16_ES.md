@@ -200,3 +200,11 @@ Sin commitear al momento de escribir esto. Probado en directorio temporal, con u
 - [x] Nueva función `mitre_tags.detector_techniques()` (inversa de `coverage_map()`).
 - [x] Probado en aislado y con datos reales; `soc_selftest.py --isolated` sigue en verde (89/89).
 - [ ] Pendiente (frontend, Sixto): esto es solo API; una vista tipo "catálogo de reglas" en el dashboard es tarea suya cuando tenga tiempo.
+
+## 2026-09-22 (tarde) — watchlists formales
+- [x] Nuevo `scripts/watchlists.py`: junta las listas de confianza que antes vivían sueltas (`data/known_ips.txt`, `kali/ioc_ips.txt`, `kali/bad_domains.txt`, `data/ioc_hashes.txt`) más las dos VLAN (`sensitive_vlans`, `untrusted_vlans`, antes hardcodeadas en `vlan_segmentation_to_alerts.py`) en un solo lugar con lectura/escritura consistente. Cada watchlist valida su tipo de entrada (IP/CIDR, dominio, hash md5/sha1/sha256, nombre de VLAN) y queda auditada en `data/watchlist_log.jsonl` (quién, qué, cuándo).
+- [x] Los detectores no cambiaron cómo leen sus archivos (siguen siendo los mismos `.txt`); `watchlists.py` es una capa encima para administrarlos sin editar archivos a mano, con bloqueo y escritura atómica que preserva el encabezado de comentarios de cada archivo.
+- [x] `vlan_segmentation_to_alerts.py` ahora lee `SENSITIVE_VLANS`/`UNTRUSTED_VLANS` de las watchlists en vez de un valor fijo en el código; sembró los mismos dos valores que tenía antes (Management/Wiping y Guest-Employee-WiFi), así que no hay cambio de comportamiento.
+- [x] Nuevos endpoints: `GET /api/watchlists`, `GET /api/watchlists/<nombre>`, `POST /api/watchlists/<nombre>` (agregar, cuerpo `{"entry": "..."}`), `DELETE /api/watchlists/<nombre>?entry=...` — solo con llave de escritura.
+- [x] Probado en aislado (validación, duplicados, borrado, permisos de lectura/escritura) y contra un servidor de API real en un directorio temporal; `soc_selftest.py --isolated` sigue en 89/89.
+- [ ] Pendiente (frontend, Sixto): una vista para administrar las watchlists desde el dashboard, cuando tenga tiempo.

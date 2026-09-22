@@ -30,6 +30,7 @@ import soc_views
 import suppression_admin
 import log_search
 import playbooks
+import watchlists
  
 HOST = os.environ.get("SOC_API_HOST", "0.0.0.0")
 PORT = int(os.environ.get("SOC_API_PORT", "8080"))
@@ -201,6 +202,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, soc_views.detections())
         if path == "/api/suppressions":
             return self._send(200, suppression_admin.list_detail())
+        if path == "/api/watchlists":
+            return self._send(200, {"watchlists": watchlists.list_watchlists()})
+        if path.startswith("/api/watchlists/"):
+            try:
+                return self._send(200, watchlists.get(unquote(path[len("/api/watchlists/"):])))
+            except ValueError as e:
+                return self._send(404, {"error": str(e)})
         if path == "/api/playbooks":
             return self._send(200, playbooks.overview())
         if path == "/api/playbooks/runs":
@@ -252,6 +260,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404 if "not found" in str(e) else 400, {"error": str(e)})
             print(f"[*] {key['user']} deleted suppression {parts[3]}")
             return self._send(200, {"deleted": removed})
+        if len(parts) == 4 and parts[1:3] == ["api", "watchlists"]:
+            entry = (parse_qs(parsed.query).get("entry") or [None])[0]
+            if not entry:
+                return self._send(400, {"error": "query param 'entry' is required"})
+            try:
+                updated = watchlists.remove(unquote(parts[3]), unquote(entry), key["user"])
+            except ValueError as e:
+                return self._send(404 if str(e).startswith("unknown watchlist") else 400, {"error": str(e)})
+            print(f"[*] {key['user']} removed from watchlist {parts[3]}: {entry}")
+            return self._send(200, {"updated": updated})
         return self._send(404, {"error": "not found", "path": path})
     def do_POST(self):
         parsed = urlparse(self.path); path = parsed.path.rstrip("/") or "/"
@@ -263,6 +281,20 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, {"error": "forbidden",
                                     "hint": f"key for {key['user']!r} is read-only"})
         parts = path.split("/")
+        # /api/watchlists/<name> (add one entry)
+        if len(parts) == 4 and parts[1:3] == ["api", "watchlists"]:
+            body, err = self._read_json_body()
+            if err:
+                return self._send(*err)
+            entry = body.get("entry")
+            if not isinstance(entry, str) or not entry.strip():
+                return self._send(400, {"error": "'entry' is required"})
+            try:
+                updated = watchlists.add(unquote(parts[3]), entry, key["user"])
+            except ValueError as e:
+                return self._send(404 if str(e).startswith("unknown watchlist") else 400, {"error": str(e)})
+            print(f"[*] {key['user']} added to watchlist {parts[3]}: {entry.strip()}")
+            return self._send(201, updated)
         # /api/suppressions (create) and /api/suppressions/preview
         if parts[1:3] == ["api", "suppressions"] and (len(parts) == 3 or parts[3:] == ["preview"]):
             body, err = self._read_json_body()
@@ -360,7 +392,7 @@ def main():
           f"({len(API_KEYS)} key(s): {n_write} write, {len(API_KEYS) - n_write} read-only)   "
           f"(CORS: {CORS or 'off'})")
     print("[*] Endpoints: /api/health  /api/summary  /api/alerts  /api/alerts/<id>  /api/hosts  /api/assets")
-    print("[*] Also:      /api/incidents  /api/incidents/<id|number>  /api/entities  /api/entities/<type:value>  /api/metrics  /api/sources  /api/detections")
+    print("[*] Also:      /api/incidents  /api/incidents/<id|number>  /api/entities  /api/entities/<type:value>  /api/metrics  /api/sources  /api/detections  /api/watchlists  /api/watchlists/<name>")
     print("[*] Automation: GET /api/playbooks  GET /api/playbooks/runs")
     print("[*] Search:    GET /api/search?source=alerts|suricata|zeek:<log>&q=...&since=1h&limit=100   GET /api/search/sources")
     print("[*] Suppress:  /api/suppressions  POST /api/suppressions/preview  POST /api/suppressions  DELETE /api/suppressions/<id>")

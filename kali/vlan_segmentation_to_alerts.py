@@ -42,9 +42,10 @@ from pathlib import Path
 SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
 from soc_core import Alert, emit_alert, diff_state_lock  # noqa: E402
+import watchlists  # noqa: E402
 
-SENSITIVE_VLANS = {"Management", "Wiping"}
-UNTRUSTED_VLANS = {"Guest-Employee-WiFi"}
+SENSITIVE_VLANS = set(watchlists.get("sensitive_vlans")["entries"])
+UNTRUSTED_VLANS = set(watchlists.get("untrusted_vlans")["entries"])
 
 
 def severity_for(src: str, dst: str) -> str:

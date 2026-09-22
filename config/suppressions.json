@@ -16,26 +16,11 @@
       }
     },
     {
-      "id": "aide-package-manager-paths",
-      "reason": "apt, rpm, PackageKit, command-not-found and the AIDE db.new file change on every package operation. Interim until these paths are excluded in /etc/aide/aide.conf.d/90_sentinel_soc (deploy/sudo_tasks.sh).",
-      "added_by": "claude-code",
-      "added": "2026-09-21",
-      "expires": "2026-12-31",
-      "match": {
-        "detector": "aide",
-        "severity": [
-          "normal",
-          "medium"
-        ],
-        "title_regex": "^File integrity: /var/lib/(apt|rpm|PackageKit|command-not-found|aide)(/|\\s)"
-      }
-    },
-    {
       "id": "aide-project-bytecode",
-      "reason": "Python regenerates __pycache__ bytecode and directory timestamps whenever project code is imported or edited; source files are still checked and compared with git. Interim until the exclusion in deploy/sudo_tasks.sh is applied.",
+      "reason": "Python regenerates __pycache__ bytecode whenever project code is imported or edited; source files are still checked and compared with git. Kept permanently (not interim): the deploy/sudo_tasks.sh exclusion applied 2026-09-21 stops AIDE from reporting the .pyc files themselves, but adding/removing them still bumps the mtime of the parent directory (kali/scripts/docs/config), which AIDE keeps tracking -- confirmed on the first check after the reinit (2026-09-22), which still found this and nothing else at these paths.",
       "added_by": "claude-code",
       "added": "2026-09-21",
-      "expires": "2026-11-30",
+      "expires": "2027-09-30",
       "allow_critical": true,
       "match": {
         "detector": "aide",

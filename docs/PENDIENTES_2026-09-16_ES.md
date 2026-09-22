@@ -193,3 +193,10 @@ Sin commitear al momento de escribir esto. Probado en directorio temporal, con u
 - [x] `python3 scripts/soc_core.py --test-alert` ahora acepta `--severity`, `--type`, `--title`, `--source-ip`, `--detector`, `--details '{json}'` y `--count N` (títulos "(i of N)"); `--matrix` manda una alerta por cada tipo × severidad (15). Todas salen con `test: true`, no abren incidente, no ejecutan playbooks y no mandan push; sí se reenvían al backend para la pestaña Test.
 - [ ] La alerta canario de `soc_selftest.py --canary` aún no lleva `test=True` (ya pedido a la otra sesión, dueña del archivo). No se marca `selftest` como detector de prueba porque ese mismo detector manda la alerta real "SOC self-test failed".
 - [ ] 7 alertas de prueba antiguas (5 `manual_test`, 2 canarios) quedaron sin marca en el archivo local; las que ya están en el backend hay que ocultarlas o borrarlas allá.
+
+## 2026-09-22 — catálogo de reglas de detección (GET /api/detections)
+- [x] El endpoint ya existía; se amplió para que sirva como el equivalente del catálogo de "Analytics rules" de Sentinel. Cada detector en `detectors[]` ahora trae: `mitre` (técnicas que puede etiquetar), `by_severity_30d`, `last_alert_at`, y `tunables` (umbrales reales, leídos en vivo de las constantes del propio script — no copiados a mano, para que no se desactualicen si alguien ajusta una variable de entorno o un valor por omisión).
+- [x] Cada regla de supresión en `suppression_rules[]` ahora trae también `match` (el criterio real que oculta la alerta), `allow_critical` y `source`, no solo el `id` y la razón.
+- [x] Nueva función `mitre_tags.detector_techniques()` (inversa de `coverage_map()`).
+- [x] Probado en aislado y con datos reales; `soc_selftest.py --isolated` sigue en verde (89/89).
+- [ ] Pendiente (frontend, Sixto): esto es solo API; una vista tipo "catálogo de reglas" en el dashboard es tarea suya cuando tenga tiempo.

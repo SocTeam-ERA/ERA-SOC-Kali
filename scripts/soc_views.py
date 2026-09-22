@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from statistics import median
 from typing import Any, Dict, List, Optional
 
@@ -21,6 +23,50 @@ import correlate
 import mitre_tags
 import soc_core
 import suppressions
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "kali"))
+
+
+def _tunables() -> Dict[str, Dict[str, Any]]:
+    """Live threshold/config values read straight from each detector module's own
+    constants, not copied by hand -- so this stays correct when someone tunes an
+    env var or edits a default, instead of silently drifting like a hand-written
+    doc would. Any module that fails to import (missing optional dependency,
+    wrong cwd) is just left out rather than breaking the whole catalog."""
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        import nmap_to_alerts as m
+        out["kali_scan"] = {
+            "new_high_risk_port_severity": "medium (remote-access/file-share/database ports)",
+            "high_risk_ports": sorted(m.HIGH_RISK_PORTS),
+            "bulk_alert_after_ports": m.HOST_BULK_THRESHOLD,
+            "vuln_finding_gone_after_hours": m.VULN_GONE_HOURS,
+        }
+    except Exception:
+        pass
+    try:
+        import arp_to_alerts as m
+        out["arp_discovery"] = {"bulk_alert_after_devices": m.ARP_BULK_THRESHOLD}
+    except Exception:
+        pass
+    try:
+        import aide_to_alerts as m
+        out["aide"] = {
+            "critical_path_prefixes": list(m.CRITICAL_PREFIXES),
+            "medium_path_prefixes": list(m.MEDIUM_PREFIXES),
+            "bulk_alert_after_files": m.AIDE_BULK_THRESHOLD,
+        }
+    except Exception:
+        pass
+    # login_monitor's brute-force threshold/window are CLI flags (soc-login.service runs
+    # with no override, so these are its --threshold/--window defaults, not live constants).
+    out["login_monitor"] = {"brute_force_threshold": "5 failed logins", "brute_force_window_seconds": 120}
+    try:
+        import login_monitor as m
+        out["login_monitor"]["new_ip_cooldown_hours"] = m.NEW_IP_COOLDOWN / 3600
+    except Exception:
+        pass
+    return out
 
 # ---- risk ------------------------------------------------------------------ #
 # An entity's risk is the sum of its unresolved alerts' points, each halving
@@ -323,15 +369,26 @@ def detections() -> Dict[str, Any]:
     hist = _history()
     c7, c30 = Counter(), Counter()
     tech30: Counter = Counter()
+    sev30: Dict[str, Counter] = defaultdict(Counter)
+    last_seen: Dict[str, float] = {}
     for r in hist:
+        last_seen[r["detector"]] = max(last_seen.get(r["detector"], 0.0), r["t"])
         if r["t"] >= now - 30 * 86400:
             c30[r["detector"]] += 1
+            sev30[r["detector"]][r["severity"]] += 1
             for t in r["mitre"]:
                 tech30[t["technique"]] += 1
             if r["t"] >= now - 7 * 86400:
                 c7[r["detector"]] += 1
-    detectors = [{"id": k, "name": v[0], "description": v[1], "alerts_7d": c7[k], "alerts_30d": c30[k]}
-                 for k, v in DETECTORS.items()]
+    det_mitre = mitre_tags.detector_techniques()
+    tunables = _tunables()
+    detectors = [{"id": k, "name": v[0], "description": v[1], "alerts_7d": c7[k], "alerts_30d": c30[k],
+                 "by_severity_30d": dict(sev30[k]),
+                 "last_alert_at": (datetime.fromtimestamp(last_seen[k], tz=timezone.utc).isoformat()
+                                   if k in last_seen else None),
+                 "mitre": det_mitre.get(k, []),
+                 "tunables": tunables.get(k, {})}
+                for k, v in DETECTORS.items()]
     cov = mitre_tags.coverage_map()
     by_tactic: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for tid, dets in cov.items():
@@ -358,7 +415,8 @@ def detections() -> Dict[str, Any]:
         "correlation_rules": [{"id": r["id"], "name": r["name"], "type": r["type"], "severity": r["severity"],
                                "enabled": r["enabled"], "incidents": per_rule[r["id"]]} for r in rules],
         "correlation_errors": rule_errors,
-        "suppression_rules": [{"id": r["id"], "reason": r["reason"],
+        "suppression_rules": [{"id": r["id"], "reason": r["reason"], "match": r["raw"].get("match"),
+                               "allow_critical": r["allow_critical"], "source": r["source"],
                                "expires": r["expires"].isoformat() if r["expires"] else None,
                                "expired": suppressions.is_expired(r), "hits_total": sup_hits[r["id"]]}
                               for r in sup_rules],

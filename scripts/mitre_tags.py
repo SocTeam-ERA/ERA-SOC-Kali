@@ -141,3 +141,15 @@ def coverage_map() -> Dict[str, List[str]]:
     for tid in _PORT_TECHNIQUES.values():
         out.setdefault(tid, set()).update({"kali_scan", "port_scanner"})
     return {t: sorted(d) for t, d in out.items()}
+
+
+def detector_techniques() -> Dict[str, List[str]]:
+    """detector id -> sorted technique ids it can tag (the inverse of coverage_map()),
+    for a per-detector catalog view. The "*" pseudo-detector (a title rule with no
+    detector restriction) is dropped: it names no real detector to attach it to."""
+    out: Dict[str, set] = {}
+    for tid, dets in coverage_map().items():
+        for det in dets:
+            if det != "*":
+                out.setdefault(det, set()).add(tid)
+    return {d: sorted(t) for d, t in out.items()}

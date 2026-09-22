@@ -147,6 +147,8 @@ def _entity_index() -> Dict[str, Dict[str, Any]]:
     index: Dict[str, Dict[str, Any]] = defaultdict(lambda: {"alerts": [], "source_alerts": []})
     ignore = correlate._self_ips()
     for a in soc_core._load_snapshot():
+        if a.get("test"):
+            continue  # demo/self-test data: never feeds an entity's risk score
         seen_all, seen_src = set(), set()
         for e in _entities_of(a):
             key = f"{e['type']}:{e['value']}"
@@ -257,6 +259,8 @@ def _history() -> List[Dict[str, Any]]:
                     r = json.loads(line)
                 except ValueError:
                     continue
+                if r.get("test"):
+                    continue  # demo/self-test data: never counts toward real detector activity
                 rows.append({"t": _epoch(r.get("timestamp")), "detector": r.get("detector"),
                              "severity": r.get("severity"), "mitre": (r.get("details") or {}).get("mitre", [])})
         _hist_cache.update(sig=sig, rows=rows)
@@ -283,7 +287,7 @@ def metrics() -> Dict[str, Any]:
             for t in r["mitre"]:
                 for tac in t.get("tactics", []):
                     tactics[tac] += 1
-    open_alerts = [a for a in snap if a.get("status", "open") == "open"]
+    open_alerts = [a for a in snap if a.get("status", "open") == "open" and not a.get("test")]
     incs = correlate.list_incidents()
     audit: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     try:

@@ -1176,12 +1176,13 @@ def summarize() -> Dict[str, Any]:
     counts = {s: 0 for s in SEVERITIES}
     by_type = {t: 0 for t in ALERT_TYPES}
     by_status = {s: 0 for s in VALID_STATUSES}
-    for a in snap:
+    real = [a for a in snap if not a.get("test")]
+    for a in real:
         counts[a.get("severity", "normal")] = counts.get(a.get("severity", "normal"), 0) + 1
         by_type[a.get("type", "")] = by_type.get(a.get("type", ""), 0) + 1
         st = a.get("status", "open")
         by_status[st] = by_status.get(st, 0) + 1
-    return {"total": len(snap), "by_severity": counts, "by_type": by_type, "by_status": by_status}
+    return {"total": len(real), "by_severity": counts, "by_type": by_type, "by_status": by_status}
 
 
 def _cli() -> int:

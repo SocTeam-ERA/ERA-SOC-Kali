@@ -196,6 +196,13 @@ def inner() -> int:
         check("this appliance's own 20-port traffic is NOT a scan (own-IP threshold)",
               find(new, f"Port scan on the wire: {own[0]}") is None)
 
+    rows_dns = [f"6\t10.69.0.14\t{own[0] if own else '10.201.5.5'}\t\t{p}\tudp\t\t\t\t"
+                for p in range(40000, 40045)]   # 45 "destination ports" all in the ephemeral range
+    n = len(feed())
+    T.parse(iter([r + "\n" for r in rows_dns]), set(), set(), None, set())
+    check("a DNS server answering many of our own ephemeral ports is NOT a scan",
+          find(new_alerts(n), "Port scan on the wire: 10.69.0.14") is None)
+
     # ---- ARP discovery -------------------------------------------------------
     group("arp")
     import arp_to_alerts as R

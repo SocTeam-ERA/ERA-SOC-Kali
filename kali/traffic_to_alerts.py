@@ -48,6 +48,16 @@ CLEARTEXT = {23: "Telnet", 21: "FTP", 110: "POP3", 143: "IMAP", 161: "SNMP", 512
 SUSPICIOUS_TLDS = (".ru", ".su", ".top", ".xyz", ".tk", ".gq", ".cf", ".ml", ".zip", ".mov")
 PORT_SCAN_THRESHOLD = 15          # distinct dst ports from one src => scan
 
+# Linux's default ephemeral/dynamic port range (net.ipv4.ip_local_port_range). A port in here
+# is one OUR OWN kernel assigned to one of our own outbound connections, so if some host shows
+# up as the source of packets landing on many of them, that is response traffic answering
+# queries we made -- most often DNS, since this box does one every minute (dns_probe.py) on top
+# of routine hostname resolution -- not that host scanning us. A real scan targets registered
+# service ports (21, 22, 80, 3389, ...); there is nothing to discover by touching our ephemeral
+# ports. Confirmed 2026-09-22: our own DNS resolver (10.69.0.14) was flagged as running an
+# hourly critical "scan" touching 40-70 ports, every one of them in this exact range.
+EPHEMERAL_PORTS = range(32768, 61000)
+
 
 def _own_ips() -> set:
     """This appliance's own IPv4 addresses. Its normal background traffic (updates, feed
@@ -144,9 +154,10 @@ def parse(stream, ioc_ips: set, bad_domains: set, pcap_path: str | None = None,
                 l4proto = l4
                 break
 
-        # port-scan tracking
+        # port-scan tracking (not on an ephemeral destination port -- see EPHEMERAL_PORTS)
         if port:
-            dst_ports[src].add(port)
+            if port not in EPHEMERAL_PORTS:
+                dst_ports[src].add(port)
             if syn == "1" and ack in ("0", ""):
                 syn_only[src] += 1
             if port in CLEARTEXT:

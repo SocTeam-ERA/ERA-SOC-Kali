@@ -642,12 +642,47 @@ def inner() -> int:
         check("a write key can add an entry", code == 201 and "198.51.100.9" in d["entries"])
         code, d = _call("/api/watchlists/trusted_ips?entry=198.51.100.9", "t-write", "DELETE")
         check("a write key can remove an entry", code == 200 and "198.51.100.9" not in d["updated"]["entries"])
+
+        code, d = _call("/api/activity?limit=500")
+        check("GET /api/activity serves a merged feed with several categories present",
+              code == 200 and d["count"] > 0 and {"watchlist", "suppression"} <= {r["category"] for r in d["activity"]})
+        check("an unknown category is a 400", _call("/api/activity?category=not-a-real-category")[0] == 400)
+        code, d = _call("/api/activity?category=watchlist")
+        check("the category filter actually filters", code == 200 and d["activity"]
+              and all(r["category"] == "watchlist" for r in d["activity"]))
     finally:
         proc.terminate()
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+
+    # ---- (added) unified activity feed (soc_activity.py) ----------------------
+    group("activity")
+    import soc_activity
+    check("the 7 audit-log sources are registered",
+          set(soc_activity.CATEGORIES) == {"alert_status", "asset_annotation", "incident",
+                                           "playbook_run", "suppression", "watchlist", "alert_aging"})
+    rows = soc_activity.feed(limit=500)
+    check("the feed merges entries from multiple sources, most-recent-first",
+          len(rows) > 0 and all(rows[i]["at"] >= rows[i + 1]["at"] for i in range(len(rows) - 1)))
+    check("every row has the normalized shape", all({"at", "actor", "category", "action", "summary", "ref"} <= set(r) for r in rows))
+    by_actor = soc_activity.feed(actor="selftest", limit=500)
+    check("the actor filter works", by_actor and all(r["actor"] == "selftest" for r in by_actor))
+    try:
+        soc_activity.feed(since="not-a-duration")
+        check("a malformed since is rejected", False)
+    except ValueError:
+        check("a malformed since is rejected", True)
+    # a deliberately ancient entry, appended directly (bypassing every writer above), proves
+    # `since` actually excludes old rows instead of just accepting any value silently
+    old_path = soc_core.DATA_DIR / "watchlist_log.jsonl"
+    with old_path.open("a") as fh:
+        fh.write(json.dumps({"at": "2000-01-01T00:00:00+00:00", "actor": "selftest-ancient",
+                             "action": "added", "watchlist": "trusted_ips", "entry": "0.0.0.0/32"}) + "\n")
+    check("`since` excludes an entry older than the window",
+          "selftest-ancient" not in {r["actor"] for r in soc_activity.feed(since="1h", limit=500)}
+          and "selftest-ancient" in {r["actor"] for r in soc_activity.feed(limit=500)})
 
     print(json.dumps([{"name": n_, "ok": ok_, "detail": d} for n_, ok_, d in results]))
     return 0

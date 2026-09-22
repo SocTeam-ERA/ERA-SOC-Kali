@@ -32,6 +32,7 @@ import suppression_admin
 import log_search
 import playbooks
 import watchlists
+import soc_activity
  
 HOST = os.environ.get("SOC_API_HOST", "0.0.0.0")
 PORT = int(os.environ.get("SOC_API_PORT", "8080"))
@@ -231,6 +232,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, watchlists.get(unquote(path[len("/api/watchlists/"):])))
             except ValueError as e:
                 return self._send(404, {"error": str(e)})
+        if path == "/api/activity":
+            try:
+                limit = min(max(int((qs.get("limit") or ["100"])[0]), 1), 500)
+            except ValueError:
+                limit = 100
+            category = (qs.get("category") or [None])[0]
+            if category and category not in soc_activity.CATEGORIES:
+                return self._send(400, {"error": f"unknown category {category!r}",
+                                        "hint": f"one of {list(soc_activity.CATEGORIES)}"})
+            try:
+                rows = soc_activity.feed(category=category, actor=(qs.get("actor") or [None])[0],
+                                         since=(qs.get("since") or [None])[0], limit=limit)
+            except ValueError as e:
+                return self._send(400, {"error": str(e)})
+            return self._send(200, {"count": len(rows), "categories": list(soc_activity.CATEGORIES), "activity": rows})
         if path == "/api/playbooks":
             return self._send(200, playbooks.overview())
         if path == "/api/playbooks/runs":

@@ -436,7 +436,12 @@ def _main() -> int:
         print(f"{res['count']} result(s) from {res['source']} -- stopped: {res['stopped']}, "
               f"scanned {res['scanned_mb']} MB in {res['elapsed_ms']} ms")
         for r in res["results"]:
-            print(r["time"], json.dumps(r["record"])[:220])
+            # r["time"] is UTC (kept that way in the API/--json path above, the correct
+            # convention for machine consumers); only this terminal-facing branch converts
+            # it to the operator's local time zone, since a bare UTC timestamp on screen
+            # reads as "now" to a human and led to real confusion (2026-09-22, Calgary).
+            local = datetime.fromisoformat(r["time"]).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z") if r["time"] else "-"
+            print(local, json.dumps(r["record"])[:220])
     return 0
 
 

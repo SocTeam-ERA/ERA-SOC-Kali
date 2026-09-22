@@ -33,6 +33,7 @@ import log_search
 import playbooks
 import watchlists
 import soc_activity
+import soc_graph
  
 HOST = os.environ.get("SOC_API_HOST", "0.0.0.0")
 PORT = int(os.environ.get("SOC_API_PORT", "8080"))
@@ -197,6 +198,12 @@ class Handler(BaseHTTPRequestHandler):
             rows = [{**{k: v for k, v in i.items() if k != "comments"}, "comment_count": len(i["comments"])}
                     for i in incs[:limit]]
             return self._send(200, {"count": len(rows), "incidents": rows})
+        if path.startswith("/api/incidents/") and path.endswith("/graph"):
+            ref = unquote(path[len("/api/incidents/"):-len("/graph")])
+            graph = soc_graph.incident_graph(ref)
+            if graph is None:
+                return self._send(404, {"error": "incident not found"})
+            return self._send(200, graph)
         if path.startswith("/api/incidents/"):
             inc = correlate.get_incident(unquote(path[len("/api/incidents/"):]))
             if inc is None:
@@ -212,6 +219,12 @@ class Handler(BaseHTTPRequestHandler):
                 limit = 50
             rows = soc_views.entities((qs.get("type") or [None])[0], limit)
             return self._send(200, {"count": len(rows), "entities": rows})
+        if path.startswith("/api/entities/") and path.endswith("/graph"):
+            ref = unquote(path[len("/api/entities/"):-len("/graph")])
+            graph = soc_graph.entity_graph(ref)
+            if graph is None:
+                return self._send(404, {"error": "entity not found (use type:value, e.g. mac:aa:bb:cc:dd:ee:ff or ip:10.0.0.5)"})
+            return self._send(200, graph)
         if path.startswith("/api/entities/"):
             detail = soc_views.entity_detail(unquote(path[len("/api/entities/"):]))
             if detail is None:

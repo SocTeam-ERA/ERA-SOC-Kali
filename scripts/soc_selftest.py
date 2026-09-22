@@ -394,6 +394,32 @@ def inner() -> int:
         check("it closes with a classification and keeps the comment", upd["status"] == "closed" and len(upd["comments"]) == 1)
         check("the change is attributed to who made it", upd["comments"][0]["by"] == "selftest")
 
+    # ---- (added) investigation graph -------------------------------------------
+    group("graph")
+    import soc_graph
+    import soc_views
+    check("an unknown incident has no graph", soc_graph.incident_graph("no-such-incident") is None)
+    check("an unknown entity has no graph", soc_graph.entity_graph("ip:198.51.100.250") is None)
+    if inc_id:
+        g = soc_graph.incident_graph(inc_id)
+        inc = correlate.get_incident(inc_id)
+        check("the incident graph has an incident node and one alert node per alert",
+              g is not None and sum(n["kind"] == "incident" for n in g["nodes"]) == 1
+              and sum(n["kind"] == "alert" for n in g["nodes"]) >= len(inc["alert_ids"]))
+        check("every alert in the incident is linked to it with a 'contains' edge",
+              sum(1 for e in g["edges"] if e["label"] == "contains") == len(inc["alert_ids"]))
+        check("node ids are stable/unique (no duplicate id across nodes)",
+              len({n["id"] for n in g["nodes"]}) == len(g["nodes"]))
+    top_entities = soc_views.entities(limit=1)
+    if top_entities:
+        ekey = top_entities[0]["key"]
+        eg = soc_graph.entity_graph(ekey)
+        check("the entity graph is centered on that entity and has at least one alert",
+              eg is not None and any(n["id"] == ekey for n in eg["nodes"])
+              and any(n["kind"] == "alert" for n in eg["nodes"]))
+        check("every edge references a node that exists in the same graph",
+              all(e["from"] in {n["id"] for n in eg["nodes"]} and e["to"] in {n["id"] for n in eg["nodes"]} for e in eg["edges"]))
+
     # ---- (added) suppressions created from the dashboard ------------------------
     group("dashboard suppressions")
     import suppression_admin
@@ -628,6 +654,17 @@ def inner() -> int:
         check("a read-only key cannot change an incident", _call(f"/api/incidents/{inc_id}", "t-read", "POST", {"comment": "x"})[0] == 403)
         code, d = _call(f"/api/incidents/{inc_id}", "t-write", "POST", {"comment": "through the API"})
         check("a write key can comment, attributed to its user", code == 200 and d["comments"][-1]["by"] == "writer")
+        code, d = _call(f"/api/incidents/{inc_id}/graph")
+        check("GET /api/incidents/<id>/graph serves a node/edge graph",
+              code == 200 and any(n["kind"] == "incident" for n in d["nodes"]) and d["edges"])
+        check("the incident graph 404s for an unknown incident", _call("/api/incidents/no-such-incident/graph")[0] == 404)
+        code, d = _call("/api/entities?limit=1")
+        ekey = d["entities"][0]["key"] if code == 200 and d["entities"] else None
+        if ekey:
+            code, d = _call(f"/api/entities/{ekey}/graph")
+            check("GET /api/entities/<ref>/graph serves a node/edge graph",
+                  code == 200 and any(n["id"] == ekey for n in d["nodes"]))
+        check("the entity graph 404s for an unknown entity", _call("/api/entities/ip:198.51.100.251/graph")[0] == 404)
         check("a read-only key cannot create a suppression", _call("/api/suppressions", "t-read", "POST", {"reason": "x"})[0] == 403)
 
         code, d = _call("/api/watchlists")

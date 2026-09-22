@@ -117,6 +117,14 @@ while true; do
       RAISED=$(python3 "$DIR/traffic_to_alerts.py" "$TSV" \
           --ioc-ips "$IOC_LIST" --bad-domains "$DIR/bad_domains.txt" \
           --pcap "$PCAP_FINAL") || { warn "traffic_to_alerts.py failed on $TSV (continuing)"; RAISED=0; }
+      # emit_alert() echoes a summary line per alert to stdout (the count on the last
+      # line is only the tail end of it) -- confirmed 2026-09-22: this made $RAISED a
+      # multi-line string whenever an alert fired, which made the numeric check below
+      # fail silently (its "2>/dev/null" was hiding a bash arithmetic syntax error) and
+      # fall through to the "no alert" branch, discarding the very capture the alert
+      # needed. 178 of 199 alerts ever raised here lost their .pcap to this. Keep only
+      # the last line, exactly as the comment above already assumed this did.
+      RAISED="${RAISED##*$'\n'}"
       RAISED="${RAISED:-0}"
       if [[ "$RAISED" -gt 0 ]] 2>/dev/null; then
         mv -f "$PCAP_TMP" "$PCAP_FINAL"

@@ -45,6 +45,11 @@ TECHNIQUES: Dict[str, tuple] = {
     "T1566":     ("Phishing", ["Initial Access"]),
     "T1574.006": ("Dynamic Linker Hijacking", ["Persistence", "Privilege Escalation", "Defense Evasion"]),
     "T1557":     ("Adversary-in-the-Middle", ["Credential Access", "Collection"]),
+    "T1550.002": ("Pass the Hash", ["Defense Evasion", "Lateral Movement"]),
+    "T1558":     ("Steal or Forge Kerberos Tickets", ["Credential Access"]),
+    "T1558.001": ("Golden Ticket", ["Credential Access"]),
+    "T1558.003": ("Kerberoasting", ["Credential Access"]),
+    "T1558.004": ("AS-REP Roasting", ["Credential Access"]),
     "T1557.001": ("LLMNR/NBT-NS Poisoning and SMB Relay", ["Credential Access", "Collection"]),
     "T1557.002": ("ARP Cache Poisoning", ["Credential Access", "Collection"]),
     "T1021.001": ("Remote Desktop Protocol", ["Lateral Movement"]),
@@ -80,6 +85,16 @@ _TITLE_RULES: List[tuple] = [
     # an unknown DHCP server / IPv6 router is unverified: it may be a legitimate new device
     ("l2_watch",       r"^Unknown (DHCP server|IPv6 router)",       [("T1557", "exposure")]),
     ("arp_discovery",  r"^(Critical address|Two MAC addresses answer)", [("T1557.002", "exposure")]),
+    # Active Directory (scripts/ad_inventory.py, ad_risks.py): a privileged-group addition is observed; the rest
+    # are weaknesses an attacker would use, so exposure
+    ("ad_inventory",   r"^Added to ",                               [("T1098", "observed")]),
+    ("ad_inventory",   r"^Kerberoastable",                          [("T1558.003", "exposure")]),
+    ("ad_inventory",   r"without Kerberos pre-authentication",      [("T1558.004", "exposure")]),
+    ("ad_inventory",   r"^Unconstrained delegation",                [("T1558", "exposure")]),
+    ("ad_inventory",   r"^krbtgt password",                         [("T1558.001", "exposure")]),
+    ("ad_inventory",   r"password policy (allows|has no minimum)|never lock out",[("T1110", "exposure")]),
+    ("ad_inventory",   r"^LAPS not deployed",                       [("T1550.002", "exposure")]),
+    ("ad_inventory",   r"^Windows host not in the domain",          [("T1200", "exposure")]),
 ]
 _TITLE_RULES = [(d, re.compile(rx), t) for d, rx, t in _TITLE_RULES]
 

@@ -25,7 +25,12 @@ and alerts (detector "ad_inventory") on:
     alert when new ones join the list);
   * a Windows machine the network scan found that is NOT in the domain (medium): nobody
     joined it, so nobody manages or patches it;
-  * the AD read failing, and recovering.
+  * the AD read failing, and recovering;
+  * the domain weaknesses of scripts/ad_risks.py (Kerberoastable accounts, no lockout, missing
+    LAPS...), when one appears or gains accounts, and a note when one is fixed.
+
+`--privileged-only` (soc-ad-privileged.timer, every 15 minutes) re-reads only the privileged
+groups, so a new Domain Admin is noticed within minutes rather than the next morning.
 
 The first run records the privileged members, computers and users as the baseline (one
 informational alert lists the privileged members to review) and only reports current risks.
@@ -62,6 +67,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ad_risks  # noqa: E402
 import soc_core  # noqa: E402
 from soc_core import Alert, diff_state_lock, emit_alert  # noqa: E402
 
@@ -260,6 +266,17 @@ def read_ad(conn, base: str, host: str, mode: str, today: Optional[date] = None)
             "last_logon": _iso(a.get("lastLogonTimestamp")), "created": _iso(a.get("whenCreated")),
             "ou": _ou(str(_first(a.get("distinguishedName")) or "")),
         }
+    privileged = read_privileged(conn, base)
+    risk_data = ad_risks.read_risk_data(conn, base, _search)
+    all_privileged = {m for members in privileged.values() for m in members}
+    return {"generated": datetime.now(timezone.utc).isoformat(), "server": host, "mode": mode,
+            "computers": computers, "users": users, "privileged": privileged,
+            "risks": ad_risks.risk_findings(risk_data, all_privileged, today or date.today()),
+            "domain_policy": risk_data["policy"]}
+
+
+def read_privileged(conn, base: str) -> Dict[str, List[str]]:
+    """{group: [sAMAccountName...]} -- recursive membership of each privileged group that exists."""
     privileged: Dict[str, List[str]] = {}
     for group in PRIVILEGED_GROUPS:
         found = _search(conn, base, f"(&(objectClass=group)(sAMAccountName={group}))", ["distinguishedName"])
@@ -271,8 +288,7 @@ def read_ad(conn, base: str, host: str, mode: str, today: Optional[date] = None)
                           ["sAMAccountName"])
         privileged[group] = sorted({str(_first(m.get("sAMAccountName"))) for m in members if m.get("sAMAccountName")},
                                    key=str.lower)
-    return {"generated": datetime.now(timezone.utc).isoformat(), "server": host, "mode": mode,
-            "computers": computers, "users": users, "privileged": privileged}
+    return privileged
 
 
 # --------------------------------------------------------------------------- #
@@ -310,6 +326,28 @@ def _names(items: List[str], limit: int = 25) -> str:
     return ", ".join(items[:limit]) + (f" (+{len(items) - limit} more)" if len(items) > limit else "")
 
 
+def privileged_changes(before: Dict[str, List[str]], now: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+    """Alert kwargs for additions (critical) and removals (normal) between two readings of the privileged groups.
+    A group absent from `before` (first time it was readable) has nothing to compare against."""
+    out: List[Dict[str, Any]] = []
+    for group, members in now.items():
+        if group not in before:
+            continue
+        old = set(before[group])
+        for sam in sorted(set(members) - old, key=str.lower):
+            out.append(dict(
+                type="intrusion", severity="critical", title=f"Added to {group}: {sam}", user=sam, detector=DETECTOR,
+                description=(f"{sam} became a member of the privileged group {group} (directly or through a nested "
+                             "group) since the previous check. If nobody made this change on purpose, treat it as a "
+                             "compromise of the domain."),
+                details={"group": group, "change": "added", "members": members}))
+        for sam in sorted(old - set(members), key=str.lower):
+            out.append(dict(type="intrusion", severity="normal", title=f"Removed from {group}: {sam}", user=sam,
+                            detector=DETECTOR, description=f"{sam} is no longer a member of {group}.",
+                            details={"group": group, "change": "removed", "members": members}))
+    return out
+
+
 def evaluate(snap: Dict[str, Any], state: Dict[str, Any], network_hosts: Dict[str, str], today: date,
              ignore_not_in_domain: List[str] = ()) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """(alert kwargs, new state)."""
@@ -329,20 +367,7 @@ def evaluate(snap: Dict[str, Any], state: Dict[str, Any], network_hosts: Dict[st
                          "addition raises a critical alert. Review that every name is expected.\n" + "\n".join(lines)),
             details={"privileged": priv})
     else:
-        for group, members in priv.items():
-            before = set(state.get("privileged", {}).get(group, []))
-            if group not in state.get("privileged", {}):
-                continue  # group not seen before (first time it was readable): nothing to compare
-            for sam in sorted(set(members) - before, key=str.lower):
-                add(type="intrusion", severity="critical", title=f"Added to {group}: {sam}", user=sam,
-                    description=(f"{sam} became a member of the privileged group {group} (directly or through a nested "
-                                 "group) since yesterday's AD inventory. If nobody made this change on purpose, treat it "
-                                 "as a compromise of the domain."),
-                    details={"group": group, "change": "added", "members": members})
-            for sam in sorted(before - set(members), key=str.lower):
-                add(type="intrusion", severity="normal", title=f"Removed from {group}: {sam}", user=sam,
-                    description=f"{sam} is no longer a member of {group}.",
-                    details={"group": group, "change": "removed", "members": members})
+        alerts.extend(privileged_changes(state.get("privileged", {}), priv))
 
     # ---- new computers and users -----------------------------------------------------------
     if not first_run:
@@ -433,8 +458,24 @@ def evaluate(snap: Dict[str, Any], state: Dict[str, Any], network_hosts: Dict[st
                          "(config/ad_inventory.json not_in_domain_ignore)."),
             details={"computer": name, "ip": ip})
 
+    # ---- domain weaknesses (ad_risks.py): alert when a weakness appears or gains accounts, note when it is fixed ----
+    before_risks: Dict[str, List[str]] = state.get("risks", {})
+    now_risks = {r["id"]: r["accounts"] for r in snap.get("risks", [])}
+    for r in snap.get("risks", []):
+        gained = sorted(set(r["accounts"]) - set(before_risks.get(r["id"], [])), key=str.lower)
+        if not gained:
+            continue
+        add(type="vuln", severity=r["severity"], title=f"{r['title']}: {_names(r['accounts'], 8)}",
+            user=r["accounts"][0] if len(r["accounts"]) == 1 else None,
+            description=r["description"] + (f" New since the last check: {_names(gained)}." if r["id"] in before_risks else ""),
+            details={"check": r["id"], "accounts": r["accounts"], "new": gained, "source": "active_directory"})
+    for rid in sorted(set(before_risks) - set(now_risks)):
+        add(type="vuln", severity="normal", title=f"AD weakness fixed: {rid.replace('_', ' ')}",
+            description=f"The '{rid}' check no longer finds anything (was: {_names(before_risks[rid])}).",
+            details={"check": rid, "change": "fixed"})
+
     new_state = {
-        "computers": sorted(comps), "users": sorted(users), "privileged": priv,
+        "computers": sorted(comps), "users": sorted(users), "privileged": priv, "risks": now_risks,
         "unsupported": now_unsupported,
         "ending_soon": sorted(alerted_ending | set(ending)),
         "stale_computers": stale["computers"], "stale_users": stale["users"],
@@ -521,7 +562,47 @@ def run(dry_run: bool = False) -> int:
     return 0
 
 
+def run_privileged(dry_run: bool = False) -> int:
+    """The quick check (every 15 minutes, soc-ad-privileged.timer): only the privileged groups, compared with
+    the last reading. A new Domain Admin should not wait for tomorrow's full inventory to be noticed. Does
+    nothing until the full inventory has recorded a baseline."""
+    with diff_state_lock(STATE_FILE):
+        state = _load_json(STATE_FILE, {})
+        if not state.get("privileged"):
+            print("[*] ad_inventory --privileged-only: no baseline yet (run the full inventory first)")
+            return 0
+        try:
+            cfg = load_config()
+            conn, host = connect(cfg)
+            try:
+                priv = read_privileged(conn, cfg["AD_BASE_DN"])
+            finally:
+                conn.unbind()
+        except Exception as e:  # noqa: BLE001
+            return _failure(state, f"{type(e).__name__}: {e}", dry_run)
+        if not priv:
+            return _failure(state, "no privileged group was readable", dry_run)
+        alerts = privileged_changes(state["privileged"], priv)
+        if dry_run:
+            for a in alerts:
+                print(f"  {a['severity']:8} {a['title']}")
+            return 0
+        if state.get("last_error"):
+            emit_alert(Alert(type="vuln", severity="normal", title="AD inventory reading Active Directory again",
+                             detector=DETECTOR, description="The Active Directory read works again.",
+                             details={"previous_error": state["last_error"]}))
+        for kw in alerts:
+            emit_alert(Alert(**kw), echo=False)
+        _save_json(STATE_FILE, {**state, "privileged": {**state["privileged"], **priv}, "last_error": None})
+        if alerts:
+            print(f"[*] ad_inventory --privileged-only: {len(alerts)} change(s)")
+    return 0
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dry-run", action="store_true", help="print what would be alerted; save nothing")
-    raise SystemExit(run(ap.parse_args().dry_run))
+    ap.add_argument("--privileged-only", action="store_true",
+                    help="only compare the privileged groups with the last reading (the 15-minute check)")
+    args = ap.parse_args()
+    raise SystemExit(run_privileged(args.dry_run) if args.privileged_only else run(args.dry_run))

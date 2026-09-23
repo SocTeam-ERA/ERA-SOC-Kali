@@ -893,6 +893,67 @@ def inner() -> int:
     check("a failed AD read alerts once, not on every retry",
           sum(a_["title"] == "AD inventory cannot read Active Directory" for a_ in new_alerts(n)) == 1)
 
+    pc = AD.privileged_changes({"Domain Admins": ["administrator"]},
+                               {"Domain Admins": ["administrator", "eve"], "DnsAdmins": ["bob"]})
+    check("the 15-minute privileged check: an addition is critical, a group seen for the first time is only recorded",
+          [(x_["title"], x_["severity"]) for x_ in pc] == [("Added to Domain Admins: eve", "critical")], str(pc))
+
+    import ad_risks as AR
+
+    def acct(sam, uac=0x200, spn=(), pwd="2026-01-01", last="2026-09-20", computer=False, os_=None, laps=False):
+        return {"sam": sam, "computer": computer, "uac": uac, "spn": list(spn), "pwd_last_set": pwd, "last_logon": last,
+                "admin_count": 0, "os": os_, "laps": laps}
+    rdata = {"accounts": [
+        acct("svc_sql", spn=["MSSQLSvc/db1:1433"]), acct("svc_admin", spn=["HTTP/app"], pwd="2020-01-01"),
+        acct("krbtgt", uac=0x202, spn=["kadmin/changepw"], pwd="2025-03-19"),
+        acct("nopreauth", uac=0x200 | AR.DONT_REQ_PREAUTH), acct("empty", uac=0x200 | AR.PASSWD_NOTREQD),
+        acct("olddisabled", uac=0x202 | AR.DONT_REQ_PREAUTH),
+        acct("DC1$", uac=AR.SERVER_TRUST_ACCOUNT | AR.TRUSTED_FOR_DELEGATION, computer=True, os_="Windows Server 2019"),
+        acct("APP1$", uac=0x1000 | AR.TRUSTED_FOR_DELEGATION, computer=True, os_="Windows Server 2019"),
+        acct("PC1$", uac=0x1000, computer=True, os_="Windows 11 Pro", laps=True),
+        acct("PC2$", uac=0x1000, computer=True, os_="Windows 11 Pro")],
+        "policy": {"min_length": 7, "lockout_threshold": 0, "max_age_days": 42, "history": 24}, "laps_in_schema": True}
+    rf = {x_["id"]: x_ for x_ in AR.risk_findings(rdata, ["svc_admin"], d0)}
+    check("Kerberoastable accounts are found, split by privilege (critical when an admin), krbtgt excluded",
+          rf.get("kerberoastable_privileged", {}).get("accounts") == ["svc_admin"]
+          and rf["kerberoastable_privileged"]["severity"] == "critical"
+          and rf.get("kerberoastable", {}).get("accounts") == ["svc_sql"], str(list(rf)))
+    check("AS-REP roasting and empty-password flags are found on enabled accounts only",
+          rf.get("asrep_roastable", {}).get("accounts") == ["nopreauth"]
+          and rf.get("password_not_required", {}).get("accounts") == ["empty"])
+    check("unconstrained delegation on a server is flagged, on a domain controller it is not",
+          rf.get("unconstrained_delegation", {}).get("accounts") == ["APP1$"])
+    check("old admin password, old krbtgt, a short minimum length and no lockout are flagged",
+          rf.get("privileged_old_password", {}).get("accounts") == ["svc_admin"] and "krbtgt_old_password" in rf
+          and "weak_password_policy" in rf and "no_lockout" in rf)
+    check("LAPS coverage counts active workstations only (servers and DCs left out)",
+          rf.get("laps_missing", {}).get("accounts") == ["PC2"] and rf["laps_missing"]["severity"] == "normal"
+          and "1 of 2" in rf["laps_missing"]["title"], str(rf.get("laps_missing")))
+    rdata["policy"] = {"min_length": 14, "lockout_threshold": 10}
+    check("a sound policy raises nothing", not {"weak_password_policy", "no_lockout"} & {
+        x_["id"] for x_ in AR.risk_findings(rdata, [], d0)})
+
+    snapr = json.loads(json.dumps(snap3))
+    snapr["risks"] = [{"id": "kerberoastable", "severity": "medium", "title": "Kerberoastable account(s) in AD",
+                       "description": "d", "accounts": ["svc_sql"], "mitre": None}]
+    al5, st5 = AD.evaluate(snapr, st3, {}, d0)
+    snapr["risks"][0]["accounts"] = ["svc_sql", "svc_web"]
+    al6, st6 = AD.evaluate(snapr, st5, {}, d0)
+    snapr["risks"] = []
+    al7, _ = AD.evaluate(snapr, st6, {}, d0)
+    check("a weakness alerts when it appears, again only when it gains accounts, and a note when it is fixed",
+          [x_["title"] for x_ in al5] == ["Kerberoastable account(s) in AD: svc_sql"]
+          and len(al6) == 1 and "svc_web" in al6[0]["description"]
+          and [x_["title"] for x_ in al7] == ["AD weakness fixed: kerberoastable"],
+          str(([x_["title"] for x_ in al5], [x_["title"] for x_ in al6], [x_["title"] for x_ in al7])))
+    import mitre_tags
+    check("AD findings carry MITRE tags (Domain Admin addition T1098, Kerberoasting T1558.003)",
+          [t_["technique"] for t_ in mitre_tags.tag({"detector": "ad_inventory", "title": "Added to Domain Admins: eve"})]
+          == ["T1098"]
+          and [t_["technique"] for t_ in mitre_tags.tag({"detector": "ad_inventory",
+                                                          "title": "Kerberoastable account(s) in AD: svc_sql"})]
+          == ["T1558.003"])
+
     # ---- (added) watchlists ---------------------------------------------------
     group("watchlists")
     import watchlists as W

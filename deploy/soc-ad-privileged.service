@@ -1,0 +1,10 @@
+[Unit]
+Description=Sentinel SOC quick check of the AD privileged groups (Domain Admins and others)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+Environment=SOC_MAX_SNAPSHOT=5000
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/ad_inventory.py --privileged-only

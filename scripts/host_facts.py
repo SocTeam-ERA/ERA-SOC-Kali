@@ -27,10 +27,11 @@ client and a server edition (Windows 10 1607 and Server 2016, 1809 and Server 20
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import xml.etree.ElementTree as ET
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -145,10 +146,41 @@ def extract(xml_path: Path) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+AD_INVENTORY = "ad_inventory.json"        # written daily by ad_inventory.py
+AD_ACTIVE_DAYS = 90                        # same rule as ad_inventory: a computer that signed in within 90 days
+
+
+def ad_covered_names(path: Optional[Path] = None, now: Optional[datetime] = None) -> set:
+    """Upper-case names of the computers Active Directory reports on and that are current (enabled, signed
+    in within AD_ACTIVE_DAYS). ad_inventory.py raises the per-PC "Unsupported Windows (per AD)" alert for
+    those, from the exact build and edition, so the NTLM-based finding here would be a second, less
+    precise alert for the same PC. Empty when the inventory does not exist or cannot be read."""
+    import soc_core
+    path = path or (soc_core.DATA_DIR / AD_INVENTORY)
+    now = now or datetime.now(timezone.utc)
+    try:
+        computers = json.loads(path.read_text()).get("computers") or {}
+    except (OSError, ValueError, AttributeError):
+        return set()
+    cutoff = now - timedelta(days=AD_ACTIVE_DAYS)
+    out = set()
+    for name, c in computers.items():
+        try:
+            last = datetime.fromisoformat(c["last_logon"]) if c.get("last_logon") else None
+        except ValueError:
+            last = None
+        if c.get("enabled") and last and (last if last.tzinfo else last.replace(tzinfo=timezone.utc)) >= cutoff:
+            out.add(str(name).upper())
+    return out
+
+
 def findings(facts_by_ip: Dict[str, Dict[str, Any]], hostnames: Dict[str, Optional[str]],
-             today: Optional[date] = None) -> List[Dict[str, Any]]:
-    """Alert kwargs (plus `_key`, as nmap_to_alerts.parse_xml() builds them) for what deserves one."""
+             today: Optional[date] = None, ad_names: Optional[set] = None) -> List[Dict[str, Any]]:
+    """Alert kwargs (plus `_key`, as nmap_to_alerts.parse_xml() builds them) for what deserves one.
+    A finding carrying `_quiet` is recorded as known but not alerted (see nmap_to_alerts._run_vulns):
+    used for a PC whose Windows support is already reported from Active Directory."""
     out: List[Dict[str, Any]] = []
+    ad_names = ad_covered_names() if ad_names is None else ad_names
     for ip, f in sorted(facts_by_ip.items()):
         name = (f.get("windows") or {}).get("DNS_Computer_Name") or (f.get("windows") or {}).get("NetBIOS_Computer_Name") \
             or f.get("netbios_name") or hostnames.get(ip)
@@ -164,6 +196,8 @@ def findings(facts_by_ip: Dict[str, Dict[str, Any]], hostnames: Dict[str, Option
                 _key=f"{ip}:smb-signing"))
         win = f.get("windows") or {}
         support = windows_support(win.get("Product_Version"), today) if TRUST_NTLM_BUILD else None
+        nb = (win.get("NetBIOS_Computer_Name") or (win.get("DNS_Computer_Name") or "").split(".")[0]).upper()
+        in_ad = bool(nb) and nb in ad_names
         if support:
             out.append(dict(
                 type="vuln", severity=support["severity"],
@@ -176,5 +210,5 @@ def findings(facts_by_ip: Dict[str, Dict[str, Any]], hostnames: Dict[str, Option
                              "long-term-servicing (LTSC) edition would still be covered." + (" " + support["caveat"] if support["caveat"] else "")),
                 details={"script": "rdp-ntlm-info", "product_version": win["Product_Version"],
                          "support_ended": support["ended"], "computer_name": name},
-                _key=f"{ip}:windows-support"))
+                _key=f"{ip}:windows-support", **({"_quiet": True} if in_ad else {})))
     return out

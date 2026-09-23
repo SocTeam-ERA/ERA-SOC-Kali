@@ -768,6 +768,28 @@ def inner() -> int:
     N.run(facts_xml, {22}, tmp / "scanfacts_state.json")
     check("...and does not raise them again on the next scan (regression guard: findings alert once)",
           find(new_alerts(n), "SMB signing not required") is None and find(new_alerts(n), "Unsupported Windows") is None)
+    # a PC that Active Directory already covers: ad_inventory raises the (more exact) alert, so no second one here
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    _now = _dt.now(_tz.utc)
+    (tmp / "ad_inventory.json").write_text(json.dumps({"computers": {
+        "ADPC": {"enabled": True, "last_logon": (_now - _td(days=3)).isoformat()},
+        "OFFPC": {"enabled": False, "last_logon": (_now - _td(days=3)).isoformat()},
+        "STALEPC": {"enabled": True, "last_logon": (_now - _td(days=200)).isoformat()},
+        "NOLOGON": {"enabled": True, "last_logon": None},
+        "BADDATE": {"enabled": True, "last_logon": "not-a-date"}}}))
+    check("only enabled AD computers that signed in within 90 days count as covered (names upper-case)",
+          host_facts.ad_covered_names() == {"ADPC"}, str(host_facts.ad_covered_names()))
+    check("a missing or unreadable inventory covers nothing", host_facts.ad_covered_names(tmp / "nope.json") == set())
+    ad_xml = tmp / "ad_scan.xml"
+    ad_xml.write_text(facts_xml.read_text().replace("10.69.9.1", "10.69.9.2").replace("OLDPC", "adpc"))
+    n = len(feed())
+    N.run(ad_xml, {22}, tmp / "scanfacts_state.json")
+    got = new_alerts(n)
+    check("for an AD-covered PC the SMB-signing alert still fires but the NTLM 'Unsupported Windows' alert does not",
+          find(got, "SMB signing not required on 10.69.9.2") is not None and find(got, "Unsupported Windows on 10.69.9.2") is None)
+    check("...yet the finding is tracked, so it can never later show up as 'No longer detected'",
+          "10.69.9.2:windows-support" in json.loads(N._vuln_state_path(tmp / "scanfacts_state.json").read_text())["hosts"])
+    (tmp / "ad_inventory.json").unlink()
     sf = soc_core.load_assets()["3c:bb:cc:00:00:01"].get("scan_facts", {})
     check("what the scan learned is kept on that host's asset record",
           sf.get("windows", {}).get("Product_Version") == "6.1.7601" and sf.get("smb_signing") == "not_required"

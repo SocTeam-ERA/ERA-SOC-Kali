@@ -433,6 +433,8 @@ def _run_vulns(vulns: list, diff_state: Path | None) -> int:
     if diff_state is None:
         for v in vulns:
             v.pop("_key", None)
+            if v.pop("_quiet", False):
+                continue
             emit_alert(Alert(**v))
             n += 1
         return n
@@ -444,8 +446,9 @@ def _run_vulns(vulns: list, diff_state: Path | None) -> int:
         current_by_key = {}
         for v in vulns:
             key = v.pop("_key")
+            quiet = v.pop("_quiet", False)      # tracked, never alerted here (reported by another detector)
             current_by_key[key] = v
-            if key not in previous:
+            if key not in previous and not quiet:
                 emit_alert(Alert(**v))
                 n += 1
             # else: the finding is already known (present now, or missing only briefly)

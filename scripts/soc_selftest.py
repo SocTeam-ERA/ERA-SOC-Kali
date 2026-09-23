@@ -711,9 +711,12 @@ def inner() -> int:
     check("build 19041 is named as a FAMILY (RDP cannot tell 2004 from 22H2), dated by its last mainstream edition",
           w10 and "19041 family" in w10["label"] and w10["ended"] == "2025-10-14" and w10["severity"] == "normal"
           and (host_facts.windows_support("10.0.19041", date(2026, 10, 15)) or {}).get("severity") == "medium")
-    check("build 22621 (Windows 11 22H2 or 23H2) is not called unsupported while 23H2 Enterprise is still covered, "
-          "and is after that ends",
-          ws("10.0.22621") is None and "22621 family" in (host_facts.windows_support("10.0.22621", date(2026, 11, 11)) or {}).get("label", ""))
+    w11 = ws("10.0.22621")
+    check("build 22621 (Windows 11 22H2 or 23H2) is flagged as a family, dated by 23H2 Home/Pro, and says Enterprise/Education "
+          "may still be covered (NTLM cannot tell the edition)",
+          w11 and "22621 family" in w11["label"] and w11["ended"] == "2025-11-11" and w11["severity"] == "normal"
+          and "2026-11-10" in w11["caveat"])
+    check("a build with no caveat has an empty one", ws("6.1.7601")["caveat"] == "")
     check("one that ended within the last year is only normal, and becomes medium after a year",
           (ws("10.0.19045") or {}).get("severity") == "normal"
           and (host_facts.windows_support("10.0.19045", date(2026, 10, 15)) or {}).get("severity") == "medium")
@@ -740,14 +743,15 @@ def inner() -> int:
           f1.get("os") == {"name": "Microsoft Windows 10 2004", "accuracy": 96}
           and f1.get("windows", {}).get("Product_Version") == "6.1.7601"
           and f1.get("smb_signing") == "not_required" and f1.get("netbios_name") == "OLDPC", str(f1))
-    fnd_held = host_facts.findings(ex, {}, today_)
-    check("the end-of-support finding is HELD by default (the NTLM build was wrong on real PCs); SMB signing is not",
-          [x_["title"].split(" on ")[0] for x_ in fnd_held] == ["SMB signing not required"], str([x_["title"] for x_ in fnd_held]))
-    check("the build is still kept in the extracted facts, to compare with winver",
-          ex["10.69.9.1"]["windows"]["Product_Version"] == "6.1.7601")
+    host_facts.TRUST_NTLM_BUILD = False
+    fnd_off = host_facts.findings(ex, {}, today_)
     host_facts.TRUST_NTLM_BUILD = True
+    check("the kill switch (SOC_TRUST_NTLM_BUILD=0) turns the end-of-support finding off and leaves SMB signing on",
+          [x_["title"].split(" on ")[0] for x_ in fnd_off] == ["SMB signing not required"], str([x_["title"] for x_ in fnd_off]))
+    check("the build is kept in the extracted facts either way", ex["10.69.9.1"]["windows"]["Product_Version"] == "6.1.7601")
+    check("by default the finding is on", host_facts.TRUST_NTLM_BUILD is True)
     fnd = host_facts.findings(ex, {}, today_)
-    check("with the switch on, that host yields exactly two findings: SMB signing (normal) and unsupported Windows (medium)",
+    check("that host yields exactly two findings: SMB signing (normal) and unsupported Windows (medium)",
           sorted((x_["title"].split(" on ")[0], x_["severity"]) for x_ in fnd)
           == [("SMB signing not required", "normal"), ("Unsupported Windows", "medium")], str([x_["title"] for x_ in fnd]))
 
@@ -764,7 +768,6 @@ def inner() -> int:
     N.run(facts_xml, {22}, tmp / "scanfacts_state.json")
     check("...and does not raise them again on the next scan (regression guard: findings alert once)",
           find(new_alerts(n), "SMB signing not required") is None and find(new_alerts(n), "Unsupported Windows") is None)
-    host_facts.TRUST_NTLM_BUILD = False          # back to the shipped default for everything after this
     sf = soc_core.load_assets()["3c:bb:cc:00:00:01"].get("scan_facts", {})
     check("what the scan learned is kept on that host's asset record",
           sf.get("windows", {}).get("Product_Version") == "6.1.7601" and sf.get("smb_signing") == "not_required"

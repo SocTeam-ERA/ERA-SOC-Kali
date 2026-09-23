@@ -20,10 +20,10 @@ It does two things with it:
     support (no more security fixes).
 
 Honest limits, stated in the alerts too: nmap's OS guess is approximate and is only stored,
-never alerted on; the Windows build from RDP/NTLM is informational only and was wrong on machines
-checked by hand (see TRUST_NTLM_BUILD), so the end-of-support finding is held; it also says nothing about
-whether an extended-support contract or a long-term-servicing edition covers a machine; and a build shared by a client and a server edition
-(Windows 10 1607 and Server 2016, 1809 and Server 2019, ...) is skipped rather than guessed.
+never alerted on; the Windows build from RDP/NTLM identifies the servicing family (checked against Active
+Directory, see TRUST_NTLM_BUILD) but not the exact release, and says nothing about whether an
+extended-support contract or a long-term-servicing edition covers a machine; and a build shared by a
+client and a server edition (Windows 10 1607 and Server 2016, 1809 and Server 2019, ...) is skipped rather than guessed.
 """
 from __future__ import annotations
 
@@ -34,18 +34,19 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# HELD 2026-09-23: the "Unsupported Windows" finding is off until the build is verified. The build comes
-# from the NTLM challenge's version field, which MS-NLMP describes as informational only, and it proved
-# wrong on real machines: four PCs that the administrator checked are Windows 11 all answered 10.0.19041
-# (a Windows 10 build), while others answer 22621 / 26100. An end-of-support alert built on it would tell
-# IT to replace machines that are fine. The build is still stored per asset (scan_facts.windows) so it can
-# be compared with `winver` on a few machines; set SOC_TRUST_NTLM_BUILD=1 to raise the finding again once
-# that shows the field can be trusted (or after switching to a source that can, such as smb-os-discovery).
-TRUST_NTLM_BUILD = os.environ.get("SOC_TRUST_NTLM_BUILD") == "1"
+# The build comes from the NTLM challenge's version field, which MS-NLMP calls informational, so it was
+# checked against Active Directory (2026-09-23, `operatingSystemVersion` of the computer objects): it names
+# the servicing FAMILY correctly (Windows 10 2004 to 22H2 answer 19041; 19045 in AD; Windows 11 22H2 and
+# 23H2 answer 22621; 22631 in AD) but cannot tell the releases of a family apart, which is why those
+# rows are named as families. For a few hours the finding was held after a report that four PCs were
+# Windows 11 despite answering 19041; AD showed they are Windows 10 22H2, so it is on again.
+# SOC_TRUST_NTLM_BUILD=0 turns it off if the field ever proves unreliable.
+TRUST_NTLM_BUILD = os.environ.get("SOC_TRUST_NTLM_BUILD", "1") != "0"
 
-# Windows build -> (name, date support ended for the LATEST-ending edition). Using the last
+# Windows build -> (name, date support ended for the LATEST-ending edition[, caveat]). Using the last
 # edition to lose support (Enterprise/Education, or the Server SKU's extended support) means
-# a finding never fires for a machine that some edition still covers. Dates follow Microsoft's
+# a finding rarely fires for a machine that some edition still covers; an entry that cannot follow
+# that rule (22621) says so in its caveat. Dates follow Microsoft's
 # lifecycle pages; verify before quoting one to management. Builds shared with a supported
 # Windows Server release are left out on purpose (14393, 17763, 20348).
 _WINDOWS: Dict[str, tuple] = {
@@ -72,7 +73,10 @@ _WINDOWS: Dict[str, tuple] = {
     "10.0.19044": ("Windows 10 21H2", "2024-06-11"),
     "10.0.19045": ("Windows 10 22H2", "2025-10-14"),
     "10.0.22000": ("Windows 11 21H2", "2024-10-08"),
-    "10.0.22621": ("Windows 11 (build 22621 family: 22H2 or 23H2)", "2026-11-10"),
+    # 23H2 is the newer of the two; its Home/Pro editions ended 2025-11-11, Enterprise/Education end 2026-11-10
+    "10.0.22621": ("Windows 11 (build 22621 family: 22H2 or 23H2)", "2025-11-11",
+                   "Enterprise and Education editions of 23H2 stay supported until 2026-11-10, and NTLM cannot tell the "
+                   "edition: check it."),
     "10.0.22631": ("Windows 11 23H2", "2026-11-10"),
 }
 
@@ -85,12 +89,14 @@ def windows_support(product_version: Optional[str], today: Optional[date] = None
     entry = _WINDOWS.get(m.group(1)) if m else None
     if not entry:
         return None
-    label, ended = entry
+    label, ended = entry[0], entry[1]
+    caveat = entry[2] if len(entry) > 2 else ""
     ended_on = date.fromisoformat(ended)
     today = today or date.today()
     if ended_on >= today:
         return None
-    return {"label": label, "ended": ended, "severity": "medium" if (today - ended_on).days > 365 else "normal"}
+    return {"label": label, "ended": ended, "caveat": caveat,
+            "severity": "medium" if (today - ended_on).days > 365 else "normal"}
 
 
 def parse_smb_signing(output: str) -> Optional[str]:
@@ -167,7 +173,7 @@ def findings(facts_by_ip: Dict[str, Dict[str, Any]], hostnames: Dict[str, Option
                              "mainstream edition to lose support; earlier for some). The build is read from the machine itself "
                              "over RDP, but it identifies the family only: newer releases of the same family report the same "
                              "build, so the exact release cannot be told apart. A paid Extended Security Updates contract or a "
-                             "long-term-servicing (LTSC) edition would still be covered."),
+                             "long-term-servicing (LTSC) edition would still be covered." + (" " + support["caveat"] if support["caveat"] else "")),
                 details={"script": "rdp-ntlm-info", "product_version": win["Product_Version"],
                          "support_ended": support["ended"], "computer_name": name},
                 _key=f"{ip}:windows-support"))

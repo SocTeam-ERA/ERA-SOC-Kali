@@ -90,6 +90,9 @@ class BruteForceTracker:
 
 
 def is_known_ip(ip: str, known) -> bool:
+    refresh = getattr(known, "refresh", None)
+    if refresh:
+        refresh()  # pick up an entry added through the watchlist API without a service restart
     if not known:
         return True  # if no allow-list is configured, treat all as known
     try:
@@ -99,10 +102,8 @@ def is_known_ip(ip: str, known) -> bool:
     return any(addr in net for net in known)
 
 
-def load_known_ips(path: str | None):
+def _parse_known_ips(path: str) -> list:
     nets = []
-    if not path:
-        return nets
     with open(path) as fh:
         for ln in fh:
             ln = ln.strip()
@@ -112,6 +113,38 @@ def load_known_ips(path: str | None):
                 except ValueError:
                     pass
     return nets
+
+
+class KnownNets(list):
+    """The trusted-IP list as a list of networks that re-reads its file whenever it changes.
+
+    It used to be read once at startup, so an address added afterwards -- by hand or through
+    the watchlist API (POST /api/watchlists/trusted_ips), which edits this very file -- had no
+    effect until the service was restarted, and every login from it kept raising a "Login from
+    NEW IP" alert. A change is detected by the file's mtime and size, checked on each login
+    event (one stat call). If the file becomes unreadable the last good list is kept."""
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self._path = path
+        self._sig = None
+        self.refresh()
+
+    def refresh(self) -> None:
+        try:
+            st = os.stat(self._path)
+            sig = (st.st_mtime_ns, st.st_size)
+            if sig != self._sig:
+                self[:] = _parse_known_ips(self._path)
+                self._sig = sig
+        except OSError:
+            pass
+
+
+def load_known_ips(path: str | None):
+    if not path:
+        return []
+    return KnownNets(path)
 
 
 # One "Login from NEW IP" alert per (ip, user) per this many seconds: an admin working from

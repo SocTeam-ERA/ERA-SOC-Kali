@@ -79,7 +79,12 @@ def _save_state(path: Path, checks: dict) -> None:
             os.remove(tmp)
 
 SAFE_TMP_PREFIXES = ("/tmp/claude-",)
-KNOWN_SNIFFERS = {"zeek", "suricata", "tcpdump", "arp-scan"}
+# nmap is this appliance's own scanner: its raw socket shows up as a "packet sniffer" for as
+# long as a scan runs. Debian's chkrootkit cron.daily job runs at ~00:11, in the middle of the
+# nightly scan cycle (00:04-00:50), so this fires by coincidence of schedules -- confirmed
+# 2026-09-23, eth2: /usr/lib/nmap/nmap. Someone running an unexpected nmap here is not this
+# check's job to catch (process-level detection is osquery's and Suricata's).
+KNOWN_SNIFFERS = {"zeek", "suricata", "tcpdump", "arp-scan", "nmap"}
 # chkrootkit's own text for "this looks like NetworkManager/a bridge, not a
 # rogue sniffer" -- not a real process name, don't require it on the allowlist.
 NETWORK_MANAGER_PLACEHOLDER = "<standard network manager>"

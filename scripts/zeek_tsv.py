@@ -2,85 +2,145 @@
 """
 zeek_tsv.py
 -----------
-Parses Zeek's classic tab-separated log format (the `#separator`/`#fields`/
-`#types` header block every zeekctl-managed log starts with -- dhcp.log,
-software.log, conn.log, ... all use it; this project isn't running the
-optional JSON-logs policy script).
+One reader for both formats a Zeek log can be written in, so no consumer in
+this project depends on which one Zeek happens to be configured for:
+
+  * classic tab-separated (the `#separator`/`#fields`/`#types` header block
+    every zeekctl-managed log starts with), and
+  * one JSON object per line (Zeek's optional `policy/tuning/json-logs`).
+
+Confirmed 2026-09-23: Zeek switched from JSON to TSV on 2026-09-21 at 16:02,
+the first restart after a package upgrade on 09-17 replaced the customised
+site/local.zeek (kept as local.zeek.dpkg-old) and lost its
+`@load policy/tuning/json-logs`. Every reader here had been written for JSON,
+so from that restart on they all failed the same silent way -- json.loads()
+raised on a TSV line, the error was swallowed as "not an event", and nothing
+was logged anywhere: zeek_to_alerts.py forwarded no Zeek notice for two days,
+dhcp_to_assets.py enriched nothing, and log_search.py returned nothing for
+Zeek data newer than that restart. A reader that accepts either format turns
+that class of config drift from "blind for days" into "no effect".
 
 Built for a `--follow` consumer (see soc_core.tail_follow()) that only ever
 sees one line at a time, in order, forever -- not a whole open file it can
-seek around in. That rules out the common approach of reading the header
-once up front: Zeek only writes it once, right when the file is created,
-and zeekctl rotates every log hourly by default, so a service that starts
-mid-hour and tails from the end of the current file (as every --follow
-detector in this project does, to skip stale history on startup) will never
-see that hour's header naturally -- it only shows up again at the next
-rotation. ZeekTSVReader stays a single long-lived object fed one line at a
-time; it re-learns the column layout from each `#fields` line it happens to
-see (whether that is the very first line of a one-shot whole-file read, or
-the header for hour N+1 arriving out of an ongoing tail), and simply can't
-parse data rows before the first header of its lifetime -- exactly the
-up-to-an-hour blind spot `read_current_header()` below exists to close.
-
-Confirmed 2026-09-22: kali/dhcp_to_assets.py had been running as a systemd
-service since it was written, silently enriching zero assets the entire
-time -- it called json.loads() on every line, but these logs are TSV, not
-JSON (Zeek's JSON output is a separate, opt-in policy script this project
-never loaded). json.JSONDecodeError was caught and swallowed as "not a
-sighting", so the bug produced no errors, just a permanently empty result.
+seek around in. That rules out the common approach of reading the header once
+up front: Zeek writes it once per file, zeekctl rotates every log hourly, and
+a service that starts mid-hour and tails from the end of the current file
+never sees that hour's header. ZeekTSVReader stays one long-lived object fed
+one line at a time; it re-learns the column layout from each `#fields` line it
+happens to see (the first line of a whole-file read, or the header of the next
+hour's file arriving out of an ongoing tail), and cannot parse TSV rows before
+the first header of its lifetime -- the blind spot `read_header_lines()` closes
+by priming it from the file's current header at startup. JSON lines carry
+their own field names and need no header at all.
 """
 from __future__ import annotations
 
+import gzip
+import json
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, List, Optional
 
-UNSET = "-"  # Zeek's placeholder for an empty/absent field (configurable via #unset_field,
-             # but every log in this project uses the default)
+UNSET = "-"        # Zeek's placeholder for an absent field (`#unset_field`; the default in every log here)
+EMPTY = "(empty)"  # Zeek's placeholder for an empty string / empty set (`#empty_field`)
+
+
+def _convert(value: str, ztype: Optional[str]) -> Any:
+    """One TSV cell as the Python value Zeek's JSON writer would have produced for it."""
+    if value == UNSET:
+        return None
+    if ztype is None:
+        return value
+    if ztype.startswith(("set[", "vector[")):
+        inner = ztype[ztype.index("[") + 1:-1]
+        return [] if value == EMPTY else [_convert(v, inner) for v in value.split(",")]
+    if value == EMPTY:
+        return ""
+    try:
+        if ztype in ("count", "int", "port"):
+            return int(value)
+        if ztype in ("time", "interval", "double"):
+            return float(value)
+    except ValueError:
+        return value
+    if ztype == "bool":
+        return value == "T"
+    return value
 
 
 class ZeekTSVReader:
     """Feed it lines one at a time, in file order; get back a dict per data row (field
-    name -> value, or None for an unset field), or None for a line that carries no data
-    (a header/comment line, or a data line seen before this reader's first header)."""
+    name -> value, None for an unset field), or None for a line that carries no data
+    (a header/comment line, a malformed line, or a TSV row seen before this reader's
+    first header). Values are typed from the `#types` header when one has been seen
+    (ports and counts become ints, times floats, sets lists), and stay strings when
+    it has not -- matching what the JSON form of the same log contains."""
 
     def __init__(self) -> None:
-        self._fields: Optional[list[str]] = None
+        self._fields: Optional[List[str]] = None
+        self._types: Optional[List[str]] = None
 
     @property
     def ready(self) -> bool:
-        """Whether a #fields header has been seen yet -- data rows are dropped until it has."""
+        """Whether a TSV `#fields` header has been seen yet (JSON lines never need one)."""
         return self._fields is not None
 
-    def feed(self, line: str) -> Optional[Dict[str, Optional[str]]]:
-        line = line.rstrip("\n")
+    def feed(self, line: str) -> Optional[Dict[str, Any]]:
+        line = line.rstrip("\r\n")
         if not line:
             return None
+        if line[0] == "{":  # JSON form: self-describing, no header needed
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                return None
+            return obj if isinstance(obj, dict) else None
         if line.startswith("#fields\t"):
             self._fields = line.split("\t")[1:]
+            self._types = None  # a new file's layout: drop the previous file's types until its own #types line
             return None
-        if line.startswith("#"):
-            return None  # #separator, #types, #open, #close, ...
+        if line.startswith("#types\t"):
+            self._types = line.split("\t")[1:]
+            return None
+        if line[0] == "#":
+            return None  # #separator, #set_separator, #empty_field, #unset_field, #path, #open, #close
         if self._fields is None:
-            return None  # a data row with no header seen yet this run -- can't map it safely
+            return None  # a TSV row with no header seen yet this run -- can't map it safely
         values = line.split("\t")
         if len(values) != len(self._fields):
             return None  # malformed/truncated line (e.g. a write caught mid-flush)
-        return {name: (None if v == UNSET else v) for name, v in zip(self._fields, values)}
+        types = self._types if self._types and len(self._types) == len(self._fields) else [None] * len(values)
+        return {name: _convert(v, t) for name, v, t in zip(self._fields, values, types)}
+
+
+# The name most call sites want: it reads either format.
+ZeekLogReader = ZeekTSVReader
+
+
+def read_header_lines(path: Path) -> List[str]:
+    """The `#fields` and `#types` lines of `path` as it stands right now (plain or .gz), or []
+    if the file doesn't exist yet, is JSON, or has none. A `--follow` consumer feeds these to
+    its ZeekTSVReader once at startup, before it starts tailing from the end of the file --
+    otherwise it stays blind to that log until the next hourly rotation hands it a fresh header
+    on its own."""
+    found: List[str] = []
+    try:
+        opener = gzip.open if str(path).endswith(".gz") else open
+        with opener(path, "rt", errors="ignore") as fh:
+            for line in fh:
+                if line.startswith(("#fields\t", "#types\t")):
+                    found.append(line.rstrip("\n"))
+                    if len(found) == 2:
+                        break
+                elif not line.startswith("#") and line.strip():
+                    break  # already past the header block
+    except OSError:
+        return []
+    return found
 
 
 def read_current_header(path: Path) -> Optional[str]:
-    """The `#fields` line of `path` as it stands right now, or None if the file doesn't
-    exist yet or has none (empty/rotated away). A `--follow` consumer calls this once at
-    startup, before it starts tailing from the end of the file, and feeds the result to
-    its ZeekTSVReader -- otherwise it stays blind to that log until the next hourly
-    rotation happens to hand it a fresh header on its own."""
-    try:
-        with path.open(errors="ignore") as fh:
-            for line in fh:
-                if line.startswith("#fields\t"):
-                    return line.rstrip("\n")
-                if not line.startswith("#") and line.strip():
-                    return None  # already past the header block without finding one
-    except OSError:
-        return None
+    """Just the `#fields` line (see read_header_lines), or None."""
+    for line in read_header_lines(path):
+        if line.startswith("#fields\t"):
+            return line
     return None

@@ -33,6 +33,7 @@ from pathlib import Path
 SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
 from soc_core import Alert, emit_alert, resolve_hostname, scan_active, tail_follow  # noqa: E402
+from zeek_tsv import ZeekTSVReader, read_header_lines  # noqa: E402
 
 DATA_DIR = Path(os.environ.get("SOC_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 DEFAULT_LOG = Path("/opt/zeek/logs/current/notice.log")
@@ -130,33 +131,32 @@ def handle_event(event: dict) -> bool:
 
 
 def process_file(path: Path, follow: bool) -> int:
+    """Forward every notice in `path`. The log may be JSON or Zeek's classic TSV (see
+    zeek_tsv.py for why that matters: it silently flipped on 2026-09-21 and this
+    forwarder went two days without forwarding a single notice)."""
     n = 0
+    reader = ZeekTSVReader()
     if follow:
+        # Zeek creates notice.log lazily, on the first notice after each hourly rotation, so a
+        # quiet hour leaves no current file at all. A file that does not exist yet must be read
+        # from its beginning once it appears (tail_follow() would otherwise skip to its end and
+        # lose the very notice that created it, and the TSV header with it).
+        appears_later = not path.exists()
+        for header in read_header_lines(path):
+            reader.feed(header)
         # tail_follow() survives zeekctl's own log rotation/archiving (it
         # replaces the live file at this path when it rotates), the same
         # way it handles logrotate for the other detectors -- see
         # soc_core.tail_follow()'s docstring.
-        for line in tail_follow(path, from_start=False):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if handle_event(event):
+        for line in tail_follow(path, from_start=appears_later):
+            event = reader.feed(line)
+            if event and handle_event(event):
                 n += 1
         return n
     with path.open("r", errors="ignore") as fh:
         for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if handle_event(event):
+            event = reader.feed(line)
+            if event and handle_event(event):
                 n += 1
     return n
 
@@ -169,8 +169,14 @@ def main() -> int:
 
     path = Path(args.log)
     if not path.exists():
-        print(f"[x] {path} not found -- is the Zeek cluster running?", file=sys.stderr)
-        return 1
+        if not args.follow:
+            print(f"[x] {path} not found -- is the Zeek cluster running?", file=sys.stderr)
+            return 1
+        # As a service, exiting here made systemd restart us in a tight loop (12 times in a
+        # minute on 2026-09-22 18:49) and the watchdog raise a critical "service down" for what
+        # was only a quiet hour with no notice.log yet. Wait for it instead.
+        print(f"[*] {path} does not exist yet (Zeek writes it on the first notice of the hour) -- waiting.",
+              flush=True)
 
     n = process_file(path, args.follow)
     if not args.follow:

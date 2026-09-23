@@ -115,6 +115,28 @@ def inner() -> int:
     check("a password-guessing notice becomes an alert", ok and a is not None)
     check("tagged MITRE T1110.001", "T1110.001" in tags(a))
     check("known-noise notices are dropped (CaptureLoss)", Z.handle_event({"note": "CaptureLoss::Too_Much_Loss", "msg": "x"}) is False)
+    zt = tmp / "notice_tsv.log"
+    zt.write_text("#separator \\x09\n#fields\tts\tnote\tmsg\tsrc\tdst\tp\n#types\ttime\tenum\tstring\taddr\taddr\tport\n"
+                  "1.0\tSSH::Password_Guessing\ttsv brute force from 203.0.113.60\t203.0.113.60\t10.201.5.5\t22\n"
+                  "2.0\tCaptureLoss::Too_Much_Loss\tnoise\t-\t-\t-\n")
+    n = len(feed())
+    forwarded = Z.process_file(zt, follow=False)
+    a = find(new_alerts(n), "tsv brute force")
+    check("a notice in Zeek's classic TSV format becomes an alert, its port typed as a number (regression: this forwarder "
+          "json.loads()-ed TSV lines and forwarded nothing for two days after Zeek's format flipped)",
+          forwarded == 1 and a is not None and a["severity"] == "critical" and a["details"]["p"] == 22)
+    zj = tmp / "notice_json.log"
+    zj.write_text(json.dumps({"ts": 1.0, "note": "SSH::Password_Guessing", "msg": "json brute force from 203.0.113.61",
+                              "src": "203.0.113.61", "dst": "10.201.5.5", "p": 22}) + "\n")
+    n = len(feed())
+    check("...and the JSON format still works", Z.process_file(zj, follow=False) == 1 and find(new_alerts(n), "json brute force"))
+
+    group("chkrootkit")
+    import chkrootkit_to_alerts as CK
+    check("this appliance's own nmap is not an unrecognized packet sniffer (it fired every night: the cron.daily job "
+          "runs mid-scan)", CK.unexplained_ifpromisc(["eth2: PACKET SNIFFER(/opt/zeek/bin/zeek[1604], /usr/lib/nmap/nmap[39680])"]) == [])
+    check("...but a sniffer nobody expects still is one",
+          CK.unexplained_ifpromisc(["eth2: PACKET SNIFFER(/tmp/x/evil-sniffer[1])"]) == ["eth2: unrecognized sniffer(s) evil-sniffer"])
 
     # ---- osquery -------------------------------------------------------------
     group("osquery")
@@ -151,6 +173,14 @@ def inner() -> int:
     n = len(feed())
     L.handle_event("accepted", "carol", "198.51.100.7", None, trk, known)
     check("...and only once per IP and user (cooldown)", find(new_alerts(n), "Login from NEW IP") is None)
+    kf = tmp / "known_ips_test.txt"
+    kf.write_text("10.0.0.0/8\n")
+    kn = L.load_known_ips(str(kf))
+    check("the trusted-IP list is loaded from its file", L.is_known_ip("10.1.2.3", kn) and not L.is_known_ip("198.51.100.77", kn))
+    with kf.open("a") as fh:
+        fh.write("198.51.100.77\n")
+    check("an address added to that file later is trusted without a restart (regression: it was read once at startup, "
+          "so entries added through the watchlist API never took effect)", L.is_known_ip("198.51.100.77", kn))
 
     # ---- AIDE ----------------------------------------------------------------
     group("aide")
@@ -234,6 +264,22 @@ def inner() -> int:
     check("Zeek's unset marker '-' becomes None", r.feed("123.0\t-\tfoo") == {"ts": "123.0", "host": None, "name": "foo"})
     check("a #types/#open/#close comment line is ignored", r.feed("#types\ttime\taddr\tstring") is None)
     check("a malformed row (wrong column count) is dropped, not misaligned", r.feed("123.0\tonly-two") is None)
+    rj = zeek_tsv.ZeekTSVReader()
+    check("a JSON-format line parses with no header at all", rj.feed('{"ts":1.5,"note":"X::Y","p":22}') == {"ts": 1.5, "note": "X::Y", "p": 22})
+    check("a malformed JSON line is dropped", rj.feed('{"ts":') is None)
+    rt = zeek_tsv.ZeekTSVReader()
+    rt.feed("#fields\tts\tid.resp_p\ttags\tok\tn")
+    rt.feed("#types\ttime\tport\tset[string]\tbool\tcount")
+    check("typed columns come out like Zeek's JSON form (time float, port int, set list, bool, count int)",
+          rt.feed("1.5\t443\ta,b\tT\t7") == {"ts": 1.5, "id.resp_p": 443, "tags": ["a", "b"], "ok": True, "n": 7})
+    check("an unset field is None and an (empty) set is []",
+          rt.feed("1.5\t-\t(empty)\tF\t-") == {"ts": 1.5, "id.resp_p": None, "tags": [], "ok": False, "n": None})
+    import gzip
+    gz_path = tmp / "hdr_test.log.gz"
+    with gzip.open(gz_path, "wt") as gz:
+        gz.write("#separator \\x09\n#fields\tts\thost\n#types\ttime\taddr\n1.0\t10.0.0.9\n")
+    check("read_header_lines reads the #fields and #types lines of a .gz archive too",
+          zeek_tsv.read_header_lines(gz_path) == ["#fields\tts\thost", "#types\ttime\taddr"])
 
     hdr_file = tmp / "hdr_test.log"
     hdr_file.write_text("#separator \\x09\n#fields\tts\thost\n#types\ttime\taddr\n1.0\t10.0.0.9\n")
@@ -278,6 +324,48 @@ def inner() -> int:
     n = SA.process_file(sw_log, follow=False)
     check("software_to_assets resolves IP to MAC via the asset inventory and enriches a known asset",
           n == 1 and soc_core.load_assets()["3c:bb:cc:00:00:03"]["software"]["SSH::SERVER"]["version"] == "OpenSSH_9.1")
+
+    dj = tmp / "dhcp_json.log"
+    dj.write_text(json.dumps({"ts": 1.0, "mac": "3c:bb:cc:00:00:01", "host_name": "JSONHOST"}) + "\n")
+    check("dhcp_to_assets also reads the JSON log format", DA.process_file(dj, follow=False) == 1
+          and soc_core.load_assets()["3c:bb:cc:00:00:01"].get("dhcp_hostname") == "JSONHOST")
+    sj = tmp / "software_json.log"
+    sj.write_text(json.dumps({"ts": 1.0, "host": "10.69.9.1", "software_type": "HTTP::SERVER", "name": "lighttpd",
+                              "unparsed_version": "lighttpd/1.4"}) + "\n")
+    check("software_to_assets also reads the JSON log format", SA.process_file(sj, follow=False) == 1
+          and soc_core.load_assets()["3c:bb:cc:00:00:01"]["software"]["HTTP::SERVER"]["name"] == "lighttpd")
+
+    late_notice, late_software = tmp / "late_notice.log", tmp / "late_software.log"
+    followers = [subprocess.Popen([sys.executable, str(KALI / "zeek_to_alerts.py"), "--follow", "--log", str(late_notice)],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                 subprocess.Popen([sys.executable, str(KALI / "software_to_assets.py"), "--follow", "--log", str(late_software)],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)]
+    try:
+        time.sleep(1.5)
+        check("--follow waits for a log that does not exist yet instead of exiting (regression: the forwarder exited 1 and "
+              "systemd restarted it in a loop whenever a quiet hour left no notice.log)",
+              all(f.poll() is None for f in followers))
+        late_notice.write_text("#separator \\x09\n#fields\tts\tnote\tmsg\tsrc\tdst\n#types\ttime\tenum\tstring\taddr\taddr\n"
+                               "1.0\tSSH::Password_Guessing\tlate brute force from 203.0.113.62\t203.0.113.62\t10.201.5.5\n")
+        late_software.write_text("#separator \\x09\n#fields\tts\thost\thost_p\tsoftware_type\tname\tunparsed_version\n"
+                                 "#types\ttime\taddr\tport\tenum\tstring\tstring\n"
+                                 "1.0\t10.69.9.2\t80\tHTTP::SERVER\tlighttpd\tlighttpd/1.4.71\n")
+        deadline, got_alert, got_asset = time.time() + 8, False, False
+        while time.time() < deadline and not (got_alert and got_asset):
+            got_alert = got_alert or find(feed(), "late brute force") is not None
+            got_asset = got_asset or "HTTP::SERVER" in soc_core.load_assets().get("3c:bb:cc:00:00:02", {}).get("software", {})
+            time.sleep(0.3)
+        check("a log that appears later is read from its first line, header included (not from its end)", got_alert and got_asset,
+              f"notice alert: {got_alert}, software enrichment: {got_asset}")
+    finally:
+        for f in followers:
+            f.terminate()
+        for f in followers:
+            try:
+                f.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                f.kill()
+
 
 
     # ---- nmap ----------------------------------------------------------------
@@ -381,6 +469,30 @@ def inner() -> int:
         return False
     check("a path-traversal source is refused", _refused(lambda: log_search.search("zeek:../../etc/passwd", "x")))
     check("an empty query is refused", _refused(lambda: log_search.search("alerts", "")))
+
+    import gzip as _gzip
+    zroot = tmp / "zeek"
+    (zroot / "current").mkdir(parents=True)
+    now_ = time.time()
+    (zroot / "current" / "dns.log").write_text(
+        "#separator \\x09\n#fields\tts\tid.orig_h\tid.resp_p\tquery\n#types\ttime\taddr\tport\tstring\n"
+        f"{now_ - 60:.6f}\t10.1.1.5\t53\ttsv-example.test\n{now_ - 30:.6f}\t10.1.1.6\t53\tother.test\n#close\t2026-09-23\n")
+    day = time.strftime("%Y-%m-%d")
+    (zroot / day).mkdir()
+    with _gzip.open(zroot / day / "notice.00:00:00-23:59:59.log.gz", "wt") as gz:
+        gz.write(json.dumps({"ts": now_ - 120, "note": "X::FromArchive", "msg": "json archive row"}) + "\n")
+    real_zeek_dir, log_search.ZEEK_DIR = log_search.ZEEK_DIR, zroot
+    try:
+        res = log_search.search("zeek:dns", "query~tsv-example dport:53", "1h", 10, 5)
+        check("a Zeek log in TSV format is searchable, with typed fields (regression: this returned nothing for any Zeek data "
+              "newer than the format flip)", res["count"] == 1 and res["results"][0]["record"]["id.orig_h"] == "10.1.1.5"
+              and res["results"][0]["record"]["id.resp_p"] == 53, str(res["count"]))
+        res = log_search.search("zeek:notice", "FromArchive", "1h", 10, 5)
+        check("a JSON archive of a log that has no live file is searchable", res["count"] == 1, str(res["count"]))
+        check("the source list includes logs that exist only as archives", "zeek:notice" in log_search.available_sources()["sources"])
+        check("a made-up Zeek log name is still refused", _refused(lambda: log_search.search("zeek:nope", "x")))
+    finally:
+        log_search.ZEEK_DIR = real_zeek_dir
 
     # ---- (added) incidents ----------------------------------------------------
     group("incidents")
@@ -499,6 +611,14 @@ def inner() -> int:
           grp is not None and grp["details"].get("count") == 7 and len(grp["details"].get("files", [])) == 7)
     n = len(feed()); run_aide([f"/srv/data/other/file{i}" for i in range(5)])
     check("AIDE: 5 files (not more) stay individual", len(new_alerts(n)) == 5)
+    check("AIDE: a group is keyed by the parent directory, never the file itself",
+          A.group_folder("/usr/bin/ac") == "/usr/bin" and A.group_folder("/etc/cron.daily/debsums") == "/etc/cron.daily"
+          and A.group_folder("/srv/data/pkg/file0") == "/srv/data/pkg" and A.group_folder("/var/lib/a/b/c/d") == "/var/lib/a")
+    n = len(feed()); run_aide([f"/usr/bin/newtool{i}" for i in range(7)], kind="Added entries:")
+    got = new_alerts(n)
+    check("AIDE: 7 new files directly in /usr/bin (a 3-level path) become ONE alert (regression: each was its own group, "
+          "so a routine package install raised 34 separate critical alerts)",
+          find(got, "7 files appeared under /usr/bin") is not None and len(got) == 1, str([a_["title"] for a_ in got][:3]))
     import suppression_admin as _sa
     q_rule = _sa.create_rule("selftest", "a folder whose files are known benign",
                              match={"detector": "aide", "title_contains": "/srv/data/quiet/"})["rule"]

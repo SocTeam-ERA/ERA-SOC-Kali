@@ -44,6 +44,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+import zeek_tsv
+
 _DATA_DIR = Path(os.environ.get("SOC_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 ALERTS_LOG = _DATA_DIR / "alerts.jsonl"
 EVE_FILE = Path(os.environ.get("SOC_EVE_FILE", "/var/log/suricata/eve.json"))
@@ -57,7 +59,8 @@ MAX_OUTPUT_BYTES = 3_000_000
 MAX_VALUE_CHARS = 500
 CHUNK = 1 << 20
 _NAME = re.compile(r"^[a-z0-9_]{1,40}$")
-_ZEEK_TS = re.compile(rb'^\{"ts":([0-9.]+)')
+_ZEEK_TS = re.compile(rb'^\{"ts":([0-9.]+)')            # JSON form
+_ZEEK_TSV_TS = re.compile(rb'^([0-9]{9,11}\.[0-9]+)\t')       # classic TSV form: first column
 _EVE_TS = re.compile(rb'^\{"timestamp":"([^"]+)"')
 _DROP_KEYS = {"payload", "payload_printable", "packet", "packet_info"}
 
@@ -183,7 +186,7 @@ def _iso_to_epoch(s: str) -> Optional[float]:
 def _line_epoch(line: bytes, family: str) -> Optional[float]:
     """Cheap timestamp read from the start of a Zeek/Suricata line (alerts are parsed instead)."""
     if family == "zeek":
-        m = _ZEEK_TS.match(line)
+        m = _ZEEK_TS.match(line) or _ZEEK_TSV_TS.match(line)
         return float(m.group(1)) if m else None
     if family == "suricata":
         m = _EVE_TS.match(line)
@@ -230,9 +233,23 @@ def _zeek_archives(name: str, since: float) -> List[Path]:
     return [p for _, p in sorted(found, reverse=True)]
 
 
+def _zeek_log_names() -> List[str]:
+    """Every Zeek log with data on disk: the live file, or an hourly archive of it. Zeek
+    creates many logs (notice, software, weird, ...) only on their first event after each
+    hourly rotation, so a log that is perfectly real is often absent from current/."""
+    names = set()
+    cur = ZEEK_DIR / "current"
+    if cur.is_dir():
+        names |= {p.stem for p in cur.glob("*.log")}
+    for p in glob.glob(str(ZEEK_DIR / "20??-??-??" / "*.log.gz")):
+        m = re.match(r"([a-z0-9_]+)\.\d{2}:\d{2}:\d{2}-\d{2}:\d{2}:\d{2}\.log\.gz$", os.path.basename(p))
+        if m:
+            names.add(m.group(1))
+    return sorted(n for n in names if _NAME.match(n))
+
+
 def available_sources() -> Dict[str, Any]:
-    zeek = sorted(p.stem for p in (ZEEK_DIR / "current").glob("*.log") if _NAME.match(p.stem)) \
-        if (ZEEK_DIR / "current").is_dir() else []
+    zeek = _zeek_log_names()
     return {"sources": ["alerts", "suricata"] + [f"zeek:{n}" for n in zeek],
             "defaults": {"since": "1h", "limit": DEFAULT_LIMIT, "timeout": DEFAULT_TIMEOUT},
             "limits": {"since": "7d", "limit": MAX_LIMIT, "timeout": MAX_TIMEOUT},
@@ -290,7 +307,7 @@ def search(source: str, q: str = "", since: Any = None, limit: Any = None, timeo
 
     family, name = (source.split(":", 1) + [""])[:2] if ":" in source else (source, "")
     if family == "zeek":
-        if not _NAME.match(name) or not (ZEEK_DIR / "current" / f"{name}.log").is_file():
+        if not _NAME.match(name) or name not in _zeek_log_names():
             raise ValueError(f"unknown Zeek log {name!r}; see the source list")
     elif family not in ("alerts", "suricata") or name:
         raise ValueError("unknown source; use alerts, suricata or zeek:<log>")
@@ -299,6 +316,19 @@ def search(source: str, q: str = "", since: Any = None, limit: Any = None, timeo
     budget = Budget(max_bytes, timeout)
     results: List[Tuple[float, Dict[str, Any]]] = []
     size = 0
+    # Zeek may write a log as JSON or as classic TSV (it flipped on 2026-09-21, see zeek_tsv.py).
+    # A TSV file names its columns only in its own header, so each file gets a reader primed
+    # from that header; a JSON file needs none.
+    zreader: List[Optional[zeek_tsv.ZeekTSVReader]] = [None]
+
+    def use_zeek_file(path: Path) -> None:
+        headers = zeek_tsv.read_header_lines(path)
+        if headers:
+            zreader[0] = zeek_tsv.ZeekTSVReader()
+            for h in headers:
+                zreader[0].feed(h)
+        else:
+            zreader[0] = None
 
     def consider(line: bytes) -> Optional[bool]:
         """True = collected, False = older than the window, None = no match."""
@@ -310,10 +340,15 @@ def search(source: str, q: str = "", since: Any = None, limit: Any = None, timeo
         low = line.lower()
         if not all(t.value.encode() in low for t in terms if t.kind == "text" and not t.negate):
             return None
-        try:
-            rec = json.loads(line)
-        except ValueError:
-            return None
+        if zreader[0] is not None and line[:1] != b"{":
+            rec = zreader[0].feed(line.decode("utf-8", "replace"))
+            if rec is None:
+                return None          # a #header/#close line or a malformed row
+        else:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                return None
         if family == "alerts":
             ts = _iso_to_epoch(str(rec.get("timestamp", "")))
             if ts is not None and ts < cutoff:
@@ -347,13 +382,15 @@ def search(source: str, q: str = "", since: Any = None, limit: Any = None, timeo
         scan_reverse(EVE_FILE)
     else:
         current = ZEEK_DIR / "current" / f"{name}.log"
-        reached = scan_reverse(current)
+        use_zeek_file(current)
+        reached = scan_reverse(current) if current.is_file() else False
         if not reached and budget.stopped == "complete":
             for arch in _zeek_archives(name, cutoff):
                 if budget.spent() or len(results) >= limit:
                     break
                 batch: List[Tuple[float, Dict[str, Any]]] = []
                 mark = len(results)
+                use_zeek_file(arch)
                 try:
                     with gzip.open(arch, "rb") as fh:
                         for n, line in enumerate(fh):

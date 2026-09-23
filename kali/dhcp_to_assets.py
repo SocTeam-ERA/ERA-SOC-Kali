@@ -36,7 +36,7 @@ from pathlib import Path
 SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
 from soc_core import record_dhcp_hostnames, tail_follow  # noqa: E402
-from zeek_tsv import ZeekTSVReader, read_current_header  # noqa: E402
+from zeek_tsv import ZeekTSVReader, read_header_lines  # noqa: E402
 
 DEFAULT_LOG = Path("/opt/zeek/logs/current/dhcp.log")
 
@@ -53,16 +53,18 @@ def process_file(path: Path, follow: bool) -> int:
     reader = ZeekTSVReader()
     if follow:
         # Prime the column layout from the log's CURRENT header before tailing from the
-        # end (see zeek_tsv.read_current_header): without this, a service that starts
+        # end (see zeek_tsv.read_header_lines): without this, a service that starts
         # mid-hour stays blind to dhcp.log until the next hourly rotation hands it a
         # fresh #fields line on its own.
-        header = read_current_header(path)
-        if header:
+        # A log that does not exist yet (Zeek writes it on its first event of the hour) must be
+        # read from its beginning once it appears, header included.
+        appears_later = not path.exists()
+        for header in read_header_lines(path):
             reader.feed(header)
         # tail_follow() survives zeekctl's own log rotation, same as the
         # other Zeek-log consumers (zeek_to_alerts.py) -- see its docstring.
         n = 0
-        for line in tail_follow(path, from_start=False):
+        for line in tail_follow(path, from_start=appears_later):
             row = reader.feed(line)
             sighting = _extract(row) if row else None
             if sighting and record_dhcp_hostnames([sighting]):

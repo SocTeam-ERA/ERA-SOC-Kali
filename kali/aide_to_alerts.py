@@ -80,6 +80,18 @@ def severity_for(path: str) -> str:
     return "normal"
 
 
+def group_folder(path: str) -> str:
+    """The folder a path is grouped under: its parent directory, at most 3 levels deep.
+
+    This used to be "/".join(path.split("/")[:4]), which for a path only three components
+    long (/usr/bin/ac, /etc/cron.daily/debsums) is the FILE ITSELF -- every such file was its
+    own group and never reached the threshold. Confirmed 2026-09-23: a routine package install
+    put 16 new files in /usr/bin and 7 in /usr/sbin, all critical, and they raised 34 separate
+    alerts instead of a handful. The last component is never part of the folder."""
+    dirs = path.split("/")[1:-1]
+    return "/" + "/".join(dirs[:3]) if dirs else "/"
+
+
 def _record(kind: str, path: str, sev: str) -> dict:
     return {"title": f"File integrity: {path} {VERB[kind]}", "severity": sev, "detector": "aide",
             "details": {"path": path, "change": kind}}
@@ -205,7 +217,7 @@ def run() -> int:
         if find_match(_record(kind, path, sev)):
             singles.append(it)
         else:
-            groups.setdefault((kind, sev, "/".join(path.split("/")[:4])), []).append(it)
+            groups.setdefault((kind, sev, group_folder(path)), []).append(it)
 
     n = 0
     for (kind, sev, folder), members in groups.items():

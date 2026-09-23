@@ -39,7 +39,7 @@ from pathlib import Path
 SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
 from soc_core import record_asset_software, build_ip_to_mac_map, tail_follow  # noqa: E402
-from zeek_tsv import ZeekTSVReader, read_current_header  # noqa: E402
+from zeek_tsv import ZeekTSVReader, read_header_lines  # noqa: E402
 
 DEFAULT_LOG = Path("/opt/zeek/logs/current/software.log")
 # How long a cached ip-to-MAC mapping is trusted before rebuilding it from the asset
@@ -78,14 +78,17 @@ def process_file(path: Path, follow: bool) -> int:
     reader = ZeekTSVReader()
     if follow:
         # Prime the column layout from the log's CURRENT header before tailing from the
-        # end (see zeek_tsv.read_current_header) -- otherwise a service that starts
+        # end (see zeek_tsv.read_header_lines) -- otherwise a service that starts
         # mid-hour stays blind to software.log until the next hourly rotation.
-        header = read_current_header(path)
-        if header:
+        # software.log is often missing entirely in a quiet hour; one that appears later must
+        # be read from its beginning, or the header (and so every row) is lost until the next
+        # hourly rotation.
+        appears_later = not path.exists()
+        for header in read_header_lines(path):
             reader.feed(header)
         cache = _MapCache()
         n = 0
-        for line in tail_follow(path, from_start=False):
+        for line in tail_follow(path, from_start=appears_later):
             row = reader.feed(line)
             sighting = _extract(row) if row else None
             if not sighting:

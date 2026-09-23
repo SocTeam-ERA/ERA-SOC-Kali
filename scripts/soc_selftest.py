@@ -893,6 +893,18 @@ def inner() -> int:
     check("a failed AD read alerts once, not on every retry",
           sum(a_["title"] == "AD inventory cannot read Active Directory" for a_ in new_alerts(n)) == 1)
 
+    dc_ = AD.daily_counts(snap1, st1, d0)
+    check("the daily history line counts active/stale computers, stale users, admins and unsupported PCs",
+          dc_["computers"]["stale"] == 1 and dc_["users"]["stale"] == 1 and dc_["privileged_accounts"] == 2
+          and dc_["os_unsupported"] == 1 and dc_["os_ending_soon"] == 1 and dc_["not_in_domain"] == 1, str(dc_))
+    AD.HISTORY_FILE = tmp / "ad_history.jsonl"
+    AD.record_history(dc_)
+    AD.record_history({**dc_, "not_in_domain": 5})
+    AD.record_history({**dc_, "date": "2026-09-24"})
+    hist = [json.loads(l_) for l_ in AD.HISTORY_FILE.read_text().splitlines()]
+    check("one history line per day: a re-run the same day replaces it",
+          [(h_["date"], h_["not_in_domain"]) for h_ in hist] == [("2026-09-23", 5), ("2026-09-24", 1)], str(hist))
+
     pc = AD.privileged_changes({"Domain Admins": ["administrator"]},
                                {"Domain Admins": ["administrator", "eve"], "DnsAdmins": ["bob"]})
     check("the 15-minute privileged check: an addition is critical, a group seen for the first time is only recorded",

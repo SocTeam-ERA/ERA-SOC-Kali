@@ -26,6 +26,7 @@ and alerts (detector "ad_inventory") on:
   * a Windows machine the network scan found that is NOT in the domain (medium): nobody
     joined it, so nobody manages or patches it;
   * the AD read failing, and recovering;
+  * (not an alert) one line per day of headline numbers in data/ad_history.jsonl, for trends;
   * the domain weaknesses of scripts/ad_risks.py (Kerberoastable accounts, no lockout, missing
     LAPS...), when one appears or gains accounts, and a note when one is fixed.
 
@@ -78,6 +79,8 @@ ENV_FILE = Path(os.environ.get("SOC_AD_ENV", "/etc/sentinel-soc/ad-ldap.env"))
 CONFIG_FILE = Path(__file__).resolve().parent.parent / "config" / "ad_inventory.json"
 INVENTORY_FILE = soc_core.DATA_DIR / "ad_inventory.json"
 STATE_FILE = soc_core.DATA_DIR / "ad_inventory_state.json"
+# One line per day with the headline numbers, for the dashboard's trend charts.
+HISTORY_FILE = soc_core.DATA_DIR / "ad_history.jsonl"
 DETECTOR = "ad_inventory"
 
 STALE_DAYS = int(os.environ.get("SOC_AD_STALE_DAYS", "90"))
@@ -488,6 +491,47 @@ def evaluate(snap: Dict[str, Any], state: Dict[str, Any], network_hosts: Dict[st
     return alerts, new_state
 
 
+def daily_counts(snap: Dict[str, Any], state: Dict[str, Any], today: date) -> Dict[str, Any]:
+    """The headline numbers of one inventory, as a line of data/ad_history.jsonl."""
+    comps, users = snap["computers"].values(), snap["users"].values()
+    live = [c for c in comps if c.get("enabled") and not _is_stale(c, today)]
+    risks = snap.get("risks", [])
+    return {
+        "date": today.isoformat(),
+        "computers": {"total": len(snap["computers"]), "active": len(live),
+                      "stale": len(state.get("stale_computers", [])),
+                      "disabled": sum(1 for c in comps if not c.get("enabled"))},
+        "users": {"total": len(snap["users"]), "enabled": sum(1 for u in users if u.get("enabled")),
+                  "stale": len(state.get("stale_users", [])),
+                  "disabled": sum(1 for u in users if not u.get("enabled"))},
+        "privileged": {g: len(m) for g, m in snap.get("privileged", {}).items()},
+        "privileged_accounts": len({m.lower() for ms in snap.get("privileged", {}).values() for m in ms}),
+        "os_unsupported": len(state.get("unsupported", {})),
+        "os_ending_soon": sum(1 for c in live if (c.get("support") or {}).get("status") == "ending_soon"),
+        "not_in_domain": len(state.get("not_in_domain", [])),
+        "risks": {r["id"]: len(r["accounts"]) for r in risks},
+        "risks_by_severity": {sev: sum(1 for r in risks if r["severity"] == sev) for sev in ("critical", "medium", "normal")},
+    }
+
+
+def record_history(line: Dict[str, Any]) -> None:
+    """Append today's line to data/ad_history.jsonl, replacing an earlier line for the same date (a re-run)."""
+    try:
+        kept = [l for l in HISTORY_FILE.read_text().splitlines() if l.strip() and json.loads(l).get("date") != line["date"]]
+    except (OSError, ValueError):
+        kept = []
+    kept.append(json.dumps(line, sort_keys=True))
+    fd, tmp = tempfile.mkstemp(dir=str(HISTORY_FILE.parent), suffix=".tmp")
+    os.chmod(tmp, 0o664)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("\n".join(kept) + "\n")
+        os.replace(tmp, HISTORY_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
 # --------------------------------------------------------------------------- #
 #  Run
 # --------------------------------------------------------------------------- #
@@ -562,6 +606,7 @@ def run(dry_run: bool = False) -> int:
         for kw in alerts:
             emit_alert(Alert(**kw), echo=False)
         _save_json(INVENTORY_FILE, snap)
+        record_history(daily_counts(snap, new_state, today))
         _save_json(STATE_FILE, new_state)
         print(f"[*] ad_inventory: {host} ({snap['mode']}): {len(snap['computers'])} computers, "
               f"{len(snap['users'])} users, {len(alerts)} alert(s)")

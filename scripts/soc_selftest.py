@@ -1062,6 +1062,18 @@ def inner() -> int:
         code, d = _call("/api/activity?category=watchlist")
         check("the category filter actually filters", code == 200 and d["activity"]
               and all(r["category"] == "watchlist" for r in d["activity"]))
+
+        code, d = _call("/api/mitre")
+        check("GET /api/mitre serves the coverage matrix", code == 200 and d["summary"]["techniques_tracked"] > 0
+              and {t["tactic"] for t in d["tactics"]} >= {"Credential Access", "Lateral Movement"})
+        code, d = _call("/api/reports/weekly")
+        check("GET /api/reports/weekly builds a live report", code == 200 and {"alerts", "exposure", "coverage", "attention"} <= set(d))
+        code, d = _call("/api/reports/weekly?format=markdown")
+        check("...and the same as Markdown on request", code == 200 and d["markdown"].startswith("# Sentinel SOC weekly report"))
+        check("a saved report that does not exist is a 404, not a crash", _call("/api/reports/weekly?date=1999-01-01")[0] == 404)
+        check("a malformed or path-like date is refused", _call("/api/reports/weekly?date=../../etc/passwd")[0] == 404)
+        code, d = _call("/api/reports")
+        check("GET /api/reports lists the saved reports", code == 200 and isinstance(d["reports"], list))
     finally:
         proc.terminate()
         try:
@@ -1095,6 +1107,83 @@ def inner() -> int:
     check("`since` excludes an entry older than the window",
           "selftest-ancient" not in {r["actor"] for r in soc_activity.feed(since="1h", limit=500)}
           and "selftest-ancient" in {r["actor"] for r in soc_activity.feed(limit=500)})
+
+    # ---- (added) ATT&CK coverage matrix and the weekly executive report ------------------------------
+    group("mitre matrix")
+    import mitre_matrix as MM
+    import mitre_tags as MT
+    m = MM.matrix()
+    sm = m["summary"]
+    check("covered + limited + gap add up to the techniques tracked",
+          sm["covered"] + sm["limited"] + sm["gap"] == sm["techniques_tracked"] > 0)
+    check("every technique a detector can tag is on the matrix, under a tactic the matrix knows",
+          set(MT.coverage_map()) <= {t["technique"] for tac in m["tactics"] for t in tac["techniques"]}
+          and {x for _n, tacs in MT.TECHNIQUES.values() for x in tacs} <= set(MM.TACTICS))
+    check("every 'limited' entry and every gap names a real missing data source",
+          set(MM.DATA_SOURCES) >= {k for v in MM.LIMITED_BY.values() for k in v}
+          and set(MM.DATA_SOURCES) >= {k for g in MM.GAPS.values() for k in g[2]}
+          and set(MM.LIMITED_BY) <= set(MT.TECHNIQUES))
+    gaps = [t for tac in m["tactics"] for t in tac["techniques"] if t["status"] == "gap"]
+    check("a gap says what data it needs and what it would detect", gaps and all(g["needs"] and g["would_detect"] for g in gaps))
+    check("data sources are ranked by how many techniques they would improve",
+          all(m["data_sources"][i]["techniques_affected"] >= m["data_sources"][i + 1]["techniques_affected"]
+              for i in range(len(m["data_sources"]) - 1)))
+    check("techniques that raised alerts in the last 30 days are counted (the earlier tests tagged some)",
+          sm["with_alerts_30d"] > 0)
+    check("an email-only technique is 'limited' by the missing mail source, not 'covered'",
+          next(t for tac in m["tactics"] for t in tac["techniques"] if t["technique"] == "T1566")["limited_by"] == ["m365"])
+    real_cov, real_tech = MT.coverage_map, dict(MT.TECHNIQUES)
+    MT.TECHNIQUES["T1110.003"] = ("Password Spraying", ["Credential Access"])
+    MT.coverage_map = lambda: {**real_cov(), "T1110.003": ["login_monitor"]}
+    try:
+        now_covered = next(t for tac in MM.matrix()["tactics"] for t in tac["techniques"] if t["technique"] == "T1110.003")
+        check("a gap becomes covered the moment a detector is written for it (no second list to update)",
+              now_covered["status"] != "gap")
+    finally:
+        MT.coverage_map = real_cov
+        MT.TECHNIQUES.clear()
+        MT.TECHNIQUES.update(real_tech)
+
+    group("weekly report")
+    import weekly_report as WR
+    t_now = time.time()
+
+    def _hist(title, sev, det, age_days, extra=None):
+        return json.dumps({"timestamp": datetime.fromtimestamp(t_now - age_days * 86400, tz=timezone.utc).isoformat(),
+                           "type": "intrusion", "severity": sev, "title": title, "detector": det, "source_ip": None,
+                           "details": {}, **(extra or {})})
+    with soc_core.ALERTS_LOG.open("a") as fh:
+        fh.write("\n".join([_hist(f"File integrity: /srv/wr{i} changed", "critical", "aide", 0.5) for i in range(2500)]
+                            + [_hist("Old thing", "medium", "kali_scan", 9),
+                               _hist("Demo alert that must not count", "critical", "aide", 0.2, {"test": True}),
+                               _hist("RESOLVED: something", "normal", "aide", 0.2)]) + "\n")
+    rep = WR.build(t_now)
+    check("the report counts real alerts only (not tests, not RESOLVED notices)",
+          rep["alerts"]["new"]["now"] >= 2500 and rep["alerts"]["new"]["now"] < 2500 + 2000
+          and not any("Demo alert" in c["title"] for c in rep["alerts"]["critical"]))
+    check("alerts from the week before are counted for the comparison", rep["alerts"]["new"]["before"] >= 1)
+    check("severity counts add up to the total", sum(v["now"] for v in rep["alerts"]["by_severity"].values()) == rep["alerts"]["new"]["now"])
+    check("a detector that produced most of the week's alerts in one hour is called out as a single event",
+          rep["alerts"]["dominated_by"] and rep["alerts"]["dominated_by"]["detector"] == "aide"
+          and rep["alerts"]["dominated_by"]["single_burst"] and any("one event" in x for x in rep["attention"]))
+    agg = [c for c in rep["alerts"]["critical"] if c["title"].startswith("File integrity: ")]
+    check("2,500 alerts from one event are one line in the critical list, not 2,500 or fifteen",
+          len(agg) == 1 and "similar alerts" in agg[0]["title"] and rep["alerts"]["critical_total"] >= 2500)
+    md = WR.to_markdown(rep)
+    check("the Markdown has the sections a manager reads", all(h in md for h in (
+        "## Needs attention", "## The week in numbers", "## Critical alerts this week", "## Known weaknesses still open",
+        "## Monitoring health", "## Detection coverage (MITRE ATT&CK)")) and "Calgary time" in md)
+    import re as _re
+    check("...with thousands separators and a plain-language change ('up N% from M')",
+          _re.search(r"\d,\d{3}", md) is not None and _re.search(r"up \d+% from", md) is not None)
+    empty = WR.build(t_now + 400 * 86400)
+    check("a period with no alerts still produces a report", empty["alerts"]["new"]["now"] == 0 and WR.to_markdown(empty))
+    saved = WR.save(rep)
+    check("save() writes the Markdown and the JSON, and the JSON reads back",
+          saved.exists() and saved.with_suffix(".json").exists()
+          and WR.load_saved(saved.stem.replace("weekly_", ""))["period"] == rep["period"])
+    check("the saved report is listed", saved.stem.replace("weekly_", "") in [r["date"] for r in WR.list_reports()])
+    check("load_saved refuses anything that is not a plain date", WR.load_saved("../../etc/passwd") is None and WR.load_saved("x") is None)
 
     # ---- (added) reader health: a log the followers cannot parse must not go unnoticed -------------
     group("reader health")

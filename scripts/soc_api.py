@@ -34,6 +34,8 @@ import playbooks
 import watchlists
 import soc_activity
 import soc_graph
+import mitre_matrix
+import weekly_report
  
 HOST = os.environ.get("SOC_API_HOST", "0.0.0.0")
 PORT = int(os.environ.get("SOC_API_PORT", "8080"))
@@ -236,6 +238,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, soc_views.sources())
         if path == "/api/detections":
             return self._send(200, soc_views.detections())
+        if path == "/api/mitre":
+            return self._send(200, mitre_matrix.matrix())
+        if path == "/api/reports":
+            return self._send(200, {"reports": weekly_report.list_reports()})
+        if path == "/api/reports/weekly":
+            date = (qs.get("date") or [None])[0]
+            if date:
+                report = weekly_report.load_saved(date)
+                if report is None:
+                    return self._send(404, {"error": f"no saved weekly report for {date!r}",
+                                            "hint": "GET /api/reports lists the saved ones; omit date for a live report"})
+            else:
+                report = weekly_report.build()
+            if (qs.get("format") or [None])[0] == "markdown":
+                return self._send(200, {"period": report["period"], "markdown": weekly_report.to_markdown(report)})
+            return self._send(200, report)
         if path == "/api/suppressions":
             return self._send(200, suppression_admin.list_detail())
         if path == "/api/watchlists":
@@ -460,7 +478,7 @@ def main():
           f"({len(API_KEYS)} key(s): {n_write} write, {len(API_KEYS) - n_write} read-only)   "
           f"(CORS: {CORS or 'off'})")
     print("[*] Endpoints: /api/health  /api/summary  /api/alerts  /api/alerts/<id>  /api/hosts  /api/assets")
-    print("[*] Also:      /api/incidents  /api/incidents/<id|number>  /api/entities  /api/entities/<type:value>  /api/metrics  /api/sources  /api/detections  /api/watchlists  /api/watchlists/<name>")
+    print("[*] Also:      /api/incidents  /api/incidents/<id|number>  /api/entities  /api/entities/<type:value>  /api/metrics  /api/sources  /api/detections  /api/mitre  /api/reports  /api/reports/weekly  /api/watchlists  /api/watchlists/<name>")
     print("[*] Automation: GET /api/playbooks  GET /api/playbooks/runs")
     print("[*] Search:    GET /api/search?source=alerts|suricata|zeek:<log>&q=...&since=1h&limit=100   GET /api/search/sources")
     print("[*] Suppress:  /api/suppressions  POST /api/suppressions/preview  POST /api/suppressions  DELETE /api/suppressions/<id>")

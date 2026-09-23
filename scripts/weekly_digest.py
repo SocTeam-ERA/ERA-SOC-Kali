@@ -193,6 +193,14 @@ def main() -> int:
     if args.since_days is None:
         _save_digest_state(now_iso)
 
+    # The digest above is the plain-text change log; the executive report (JSON + Markdown, served by
+    # /api/reports) is written by the same weekly run so there is one timer, not two.
+    try:
+        import weekly_report
+        print(f"[*] Executive report written to {weekly_report.save()}")
+    except Exception as e:  # noqa: BLE001 -- the digest is already saved; never fail the run over the report
+        print(f"[!] weekly report not written: {type(e).__name__}: {e}", file=sys.stderr)
+
     return 0
 
 

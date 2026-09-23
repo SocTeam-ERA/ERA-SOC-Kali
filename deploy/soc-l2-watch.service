@@ -1,0 +1,18 @@
+[Unit]
+Description=Sentinel SOC broadcast-level attack detection (rogue DHCP server, rogue IPv6 router)
+After=soc-zeek-boot.service
+Requires=soc-zeek-boot.service
+
+[Service]
+Type=simple
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/kali
+# The ntfy topic is a secret and is not stored in this repository: the installer copies it from
+# an existing unit (see deploy/install_l2_watch.sh) so critical alerts reach the phone.
+Environment=SOC_MAX_SNAPSHOT=5000
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/kali/l2_to_alerts.py --follow
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

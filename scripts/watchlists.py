@@ -91,6 +91,21 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
         "used_by": ["malware_detector"],
         "validate": _hash,
     },
+    "dhcp_servers": {
+        "path": DATA_DIR / "watchlists" / "dhcp_servers.txt",
+        "description": "DHCP servers allowed to hand out addresses. l2_watch raises a critical alert when any other "
+                       "address answers a client with an OFFER or ACK (a rogue DHCP server can redirect or block every "
+                       "machine that trusts it); arp_to_alerts also treats these as critical addresses whose MAC must not change.",
+        "used_by": ["l2_watch", "arp_discovery"],
+        "validate": _ip_or_cidr,
+    },
+    "ra_sources": {
+        "path": DATA_DIR / "watchlists" / "ra_sources.txt",
+        "description": "IPv6 link-local addresses of the routers allowed to send Router Advertisements. l2_watch raises "
+                       "an alert on any other source (a rogue RA can make hosts send their IPv6 traffic through the attacker).",
+        "used_by": ["l2_watch"],
+        "validate": _ip_or_cidr,
+    },
     "sensitive_vlans": {
         "path": DATA_DIR / "watchlists" / "sensitive_vlans.txt",
         "description": "VLANs where reachability from an untrusted VLAN is critical on its own "

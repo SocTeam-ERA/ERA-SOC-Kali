@@ -44,7 +44,9 @@ TECHNIQUES: Dict[str, tuple] = {
     "T1548.001": ("Setuid and Setgid", ["Privilege Escalation", "Defense Evasion"]),
     "T1566":     ("Phishing", ["Initial Access"]),
     "T1574.006": ("Dynamic Linker Hijacking", ["Persistence", "Privilege Escalation", "Defense Evasion"]),
+    "T1557":     ("Adversary-in-the-Middle", ["Credential Access", "Collection"]),
     "T1557.001": ("LLMNR/NBT-NS Poisoning and SMB Relay", ["Credential Access", "Collection"]),
+    "T1557.002": ("ARP Cache Poisoning", ["Credential Access", "Collection"]),
     "T1021.001": ("Remote Desktop Protocol", ["Lateral Movement"]),
     "T1021.002": ("SMB/Windows Admin Shares", ["Lateral Movement"]),
     "T1021.004": ("SSH", ["Lateral Movement"]),
@@ -73,6 +75,11 @@ _TITLE_RULES: List[tuple] = [
     ("osquery",        r"^Scheduled task:",                         [("T1053.003", "observed")]),
     ("phishing_detector", r"^Phishing indicators",                  [("T1566", "observed")]),
     ("kali_scan",      r"^SMB signing not required",                [("T1557.001", "exposure")]),
+    # answered by our own canary: direct evidence, not just exposure
+    ("l2_watch",       r"^LLMNR/NBT-NS poisoner",                   [("T1557.001", "observed")]),
+    # an unknown DHCP server / IPv6 router is unverified: it may be a legitimate new device
+    ("l2_watch",       r"^Unknown (DHCP server|IPv6 router)",       [("T1557", "exposure")]),
+    ("arp_discovery",  r"^(Critical address|Two MAC addresses answer)", [("T1557.002", "exposure")]),
 ]
 _TITLE_RULES = [(d, re.compile(rx), t) for d, rx, t in _TITLE_RULES]
 

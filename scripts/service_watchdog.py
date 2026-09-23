@@ -47,6 +47,11 @@ SERVICES = [
     "suricata",
 ]
 
+# Units that exist only once the administrator has installed them (deploy/install_l2_watch.sh):
+# watched from then on, but not reported "down" before they exist.
+OPTIONAL_SERVICES = ["soc-l2-watch"]
+SERVICES += [u for u in OPTIONAL_SERVICES if Path(f"/etc/systemd/system/{u}.service").exists()]
+
 
 def is_active(unit: str) -> bool:
     r = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True)

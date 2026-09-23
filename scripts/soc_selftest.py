@@ -769,8 +769,8 @@ def inner() -> int:
     group("watchlists")
     import watchlists as W
     names = {w["name"] for w in W.list_watchlists()}
-    check("all six watchlists are registered", names == {"trusted_ips", "bad_ips", "bad_domains",
-                                                          "bad_hashes", "sensitive_vlans", "untrusted_vlans"}, str(names))
+    check("all eight watchlists are registered", names == {"trusted_ips", "bad_ips", "bad_domains", "bad_hashes",
+                                                           "dhcp_servers", "ra_sources", "sensitive_vlans", "untrusted_vlans"}, str(names))
     before = W.get("trusted_ips")["count"]
     W.add("trusted_ips", "203.0.113.9/32", "selftest")
     check("adding a valid CIDR to a watchlist works", W.get("trusted_ips")["count"] == before + 1)
@@ -799,6 +799,190 @@ def inner() -> int:
     check("bad_ips/bad_domains (kali/-backed lists) are isolated too, not the real project files",
           "totally-fake-selftest-domain.example" in W.get("bad_domains")["entries"]
           and (not real_bad_domains.exists() or real_bad_domains.read_text() == real_before))
+
+    # ---- (added) broadcast-level attacks: rogue DHCP server, rogue IPv6 router, LLMNR/NBT-NS poisoner, ARP owner ----
+    group("l2 detections")
+    import l2_watch
+    import poisoner_canary as PC
+    import socket as _socket
+    import struct as _struct
+    import threading as _threading
+    for ip_ in ("10.0.0.51", "10.0.0.52"):
+        W.add("dhcp_servers", ip_, "selftest")
+    W.add("ra_sources", "fe80::1", "selftest")
+
+    dw = l2_watch.DhcpWatch()
+    drow = lambda server, msgs: {"msg_types": msgs, "server_addr": server, "mac": "aa:bb:cc:00:00:99", "assigned_addr": "10.0.0.77"}
+    n = len(feed())
+    check("an OFFER from a trusted DHCP server is ignored", dw.feed(drow("10.0.0.51", ["OFFER"])) is False and not new_alerts(n))
+    check("a client's DISCOVER (no server in it) is ignored", dw.feed(drow(None, ["DISCOVER"])) is False)
+    check("an ACK from an unknown DHCP server is a critical alert, tagged MITRE T1557",
+          dw.feed(drow("10.0.0.66", ["ACK"])) is True)
+    a = find(new_alerts(n), "Unknown DHCP server 10.0.0.66")
+    check("...with the client and the address it was given", a is not None and a["severity"] == "critical"
+          and a["details"]["client_mac"] == "aa:bb:cc:00:00:99" and "T1557" in tags(a))
+    check("...and only once a day per server", dw.feed(drow("10.0.0.66", ["OFFER"])) is False
+          and dw.feed(drow("10.0.0.67", ["OFFER"])) is True)
+    W.add("dhcp_servers", "10.0.0.68", "selftest")
+    dw.trusted._loaded = 0.0
+    check("a server added to the watchlist is trusted at once, without restarting the service",
+          dw.feed(drow("10.0.0.68", ["OFFER"])) is False)
+
+    rw = l2_watch.RaWatch()
+    rrow = lambda src, otype=134: {"proto": "icmp", "id.orig_p": otype, "id.orig_h": src, "id.resp_h": "ff02::1"}
+    check("a Router Advertisement from the trusted router is ignored", rw.feed(rrow("fe80::1")) is False)
+    check("a Router SOLICITATION (a client looking for a router, type 133) is not an advertisement",
+          rw.feed(rrow("fe80::dead", 133)) is False and rw.feed(rrow("::")) is False)
+    n = len(feed())
+    check("an advertisement from an unknown source is a medium alert", rw.feed(rrow("fe80::dead")) is True)
+    a = find(new_alerts(n), "Unknown IPv6 router fe80::dead")
+    check("...tagged MITRE T1557", a is not None and a["severity"] == "medium" and "T1557" in tags(a))
+
+    zdir = tmp / "zeek_l2"
+    (zdir / "current").mkdir(parents=True)
+    now_l2 = time.time()
+    (zdir / "current" / "dhcp.log").write_text(
+        "#separator \\x09\n#fields\tts\tmac\tserver_addr\tmsg_types\tassigned_addr\n#types\ttime\tstring\taddr\tvector[string]\taddr\n"
+        + "".join(f"{now_l2}\taa:aa:aa:aa:aa:aa\t10.9.0.1\tOFFER,ACK\t10.9.0.{i}\n" for i in range(6))
+        + f"{now_l2}\tbb:bb:bb:bb:bb:bb\t10.9.0.2\tOFFER\t10.9.0.99\n{now_l2}\tcc:cc:cc:cc:cc:cc\t-\tDISCOVER\t-\n")
+    (zdir / "current" / "conn.log").write_text(
+        "#separator \\x09\n#fields\tts\tid.orig_h\tid.orig_p\tid.resp_h\tid.resp_p\tproto\n#types\ttime\taddr\tport\taddr\tport\tenum\n"
+        f"{now_l2}\tfe80::aa\t134\tff02::1\t0\ticmp\n"                       # a recent advertisement: learned
+        f"{now_l2 - 10 * 86400}\tfe80::bb\t134\tff02::1\t0\ticmp\n"           # ten days old: a re-addressed router, not learned
+        f"{now_l2}\tfe80::cc\t133\tff02::2\t134\ticmp\n")                     # a solicitation: not a router
+    check("DHCP servers are learned from the history, with how often each was seen; a DISCOVER is not a server",
+          l2_watch.learn_dhcp_servers(zdir) == {"10.9.0.1": 6, "10.9.0.2": 1}, str(l2_watch.learn_dhcp_servers(zdir)))
+    check("IPv6 routers are learned only from recent days and only from advertisements (a router can be re-addressed)",
+          l2_watch.learn_ra_sources(zdir) == {"fe80::aa": 1}, str(l2_watch.learn_ra_sources(zdir)))
+    base_state = l2_watch.State(tmp / "l2_base_state.json")
+    n = len(feed())
+    learned = l2_watch.ensure_baselines(base_state, zdir)
+    a = find(new_alerts(n), "Baseline established: 2 trusted DHCP server(s)")
+    check("first start learns both trusted lists into the watchlists and raises one normal alert that lists them",
+          sorted(learned) == ["dhcp_servers", "ra_sources"] and a is not None and a["severity"] == "normal"
+          and "10.9.0.2" in a["details"]["rarely_seen"] and "10.9.0.1" in W.get("dhcp_servers")["entries"]
+          and "fe80::aa" in W.get("ra_sources")["entries"])
+    n = len(feed())
+    check("...and never again (an administrator who empties a list is not overruled)",
+          l2_watch.ensure_baselines(base_state, zdir) == [] and not new_alerts(n))
+
+    (tmp / "targets_l2.conf").write_text("10.7.0.0/24\n# comment\n192.168.9.0/24\n10.8.0.1/32\n")
+    (tmp / "resolv_l2.conf").write_text("nameserver 10.7.0.14\nnameserver ::1\nsearch x\n")
+    crit = l2_watch.critical_addresses(tmp / "targets_l2.conf", tmp / "resolv_l2.conf")
+    check("critical addresses are each VLAN's .1 gateway, the DNS servers and the trusted DHCP servers (not a /32, not IPv6)",
+          crit.get("10.7.0.1") == "gateway" and crit.get("192.168.9.1") == "gateway" and crit.get("10.7.0.14") == "DNS server"
+          and crit.get("10.0.0.51") == "DHCP server" and "10.8.0.1" not in crit and "::1" not in crit, str(crit))
+
+    real_crit = l2_watch.critical_addresses
+    l2_watch.critical_addresses = lambda *a_, **k_: {"10.7.0.1": "gateway", "10.7.0.2": "gateway"}
+    try:
+        owners_l2 = tmp / "l2_owners.json"
+        scan = lambda gw_mac, extra=None: {"10.7.0.0/24": {
+            **{m_: {"ip": "10.7.0.1", "vendor": "GW Inc", "iface": "eth0"} for m_ in ([gw_mac] + (extra or []))},
+            "aa:00:00:00:00:50": {"ip": "10.7.0.50", "vendor": "PC", "iface": "eth0"},
+            "00:00:5e:00:01:07": {"ip": "10.7.0.2", "vendor": "VRRP", "iface": "eth0"}}}
+        n = len(feed())
+        check("the first sighting of a critical address is recorded silently",
+              R.check_critical_addresses(scan("aa:00:00:00:00:01"), owners_l2) == 0)
+        check("the same owner on the next scan is silent", R.check_critical_addresses(scan("aa:00:00:00:00:01"), owners_l2) == 0)
+        check("a different MAC on the gateway is a critical alert (ARP poisoning / rogue gateway), tagged T1557.002",
+              R.check_critical_addresses(scan("aa:00:00:00:00:02"), owners_l2) == 1)
+        a = find(new_alerts(n), "Critical address 10.7.0.1 (gateway) is now answered by a different MAC")
+        check("...naming both MACs and saying it may be a legitimate failover",
+              a is not None and a["severity"] == "critical" and "aa:00:00:00:00:01" in a["title"] and "failover" in a["description"]
+              and "T1557.002" in tags(a))
+        n = len(feed())
+        check("a VRRP failover (only the physical MAC in parentheses changes) is NOT an alert",
+              R.check_critical_addresses({"10.7.0.0/24": {"00:00:5e:00:01:07 (11:22:33:44:55:66)":
+                                          {"ip": "10.7.0.2", "vendor": "VRRP", "iface": "eth0"}}}, owners_l2) == 0
+              and R.check_critical_addresses({"10.7.0.0/24": {"00:00:5e:00:01:07 (66:55:44:33:22:11)":
+                                             {"ip": "10.7.0.2", "vendor": "VRRP", "iface": "eth0"}}}, owners_l2) == 0)
+        check("two MACs answering for a critical address in one scan is a critical alert",
+              R.check_critical_addresses(scan("aa:00:00:00:00:02", ["aa:00:00:00:00:03"]), owners_l2) == 1
+              and find(new_alerts(n), "Two MAC addresses answer for critical address 10.7.0.1") is not None)
+    finally:
+        l2_watch.critical_addresses = real_crit
+
+    tx = 0x5A5A
+    q = PC.build_llmnr_query("qwerty12", tx)
+    check("the LLMNR canary is a well-formed query for a type-A name",
+          q[:2] == _struct.pack(">H", tx) and q[4:6] == b"\x00\x01" and b"\x08qwerty12\x00" in q and q.endswith(b"\x00\x01\x00\x01"))
+    nb = PC.build_nbns_query("wpadtest", tx)
+    check("the NBT-NS canary is a 50-byte name query (broadcast flag, type NB)", len(nb) == 50 and nb[2:4] == b"\x01\x10" and nb[-4:-2] == b"\x00\x20")
+    resp_hdr = lambda tid, flags, an: _struct.pack(">HHHHHH", tid, flags, 1, an, 0, 0) + b"x" * 4
+    check("only a positive answer to OUR question counts (not another id, not a query, not a WINS 'name not found', not empty)",
+          PC.parse_llmnr_response(resp_hdr(tx, 0x8000, 1), tx) == {"protocol": "LLMNR", "answers": 1}
+          and PC.parse_nbns_response(resp_hdr(tx, 0x8500, 1), tx) == {"protocol": "NBT-NS", "answers": 1}
+          and PC.parse_llmnr_response(resp_hdr(tx + 1, 0x8000, 1), tx) is None
+          and PC.parse_llmnr_response(resp_hdr(tx, 0x0000, 1), tx) is None
+          and PC.parse_nbns_response(resp_hdr(tx, 0x8003, 0), tx) is None
+          and PC.parse_llmnr_response(resp_hdr(tx, 0x8000, 0), tx) is None)
+    fake = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    fake.bind(("127.0.0.1", 0))
+    fake_port = fake.getsockname()[1]
+
+    def poisoner():                       # answers whatever it is asked, like Responder
+        fake.settimeout(3)
+        try:
+            data_, addr_ = fake.recvfrom(2048)
+            fake.sendto(data_[:2] + _struct.pack(">HHHHH", 0x8000, 1, 1, 0, 0) + b"xxxx", addr_)
+        except OSError:
+            pass
+    th = _threading.Thread(target=poisoner)
+    th.start()
+    hits_ = PC.probe("127.0.0.1", ("127.0.0.1", fake_port), PC.build_llmnr_query("abc", 0x77), 0x77, PC.parse_llmnr_response,
+                     set(), wait=1.0)
+    th.join()
+    check("the canary detects a poisoner that answers its made-up name (real sockets, fake poisoner)",
+          [h_["responder"] for h_ in hits_] == ["127.0.0.1"] and hits_[0]["protocol"] == "LLMNR")
+    silent = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    silent.bind(("127.0.0.1", 0))
+    check("...and finds nothing when nobody answers",
+          PC.probe("127.0.0.1", ("127.0.0.1", silent.getsockname()[1]), PC.build_llmnr_query("abc", 1), 1,
+                   PC.parse_llmnr_response, set(), wait=0.5) == [])
+    silent.close()
+    fake.close()
+    hit_ = {"responder": "10.7.0.66", "protocol": "LLMNR", "iface": "eth9", "name": "qwerty12", "network": "10.7.0.5/24"}
+    n = len(feed())
+    check("an answer to the canary is a critical alert tagged MITRE T1557.001 as OBSERVED (direct evidence)",
+          PC.report(hit_) is True)
+    a = find(new_alerts(n), "LLMNR/NBT-NS poisoner answering on eth9: 10.7.0.66")
+    check("...that names the invented name and says what to do",
+          a is not None and a["severity"] == "critical" and "qwerty12" in a["description"] and "LLMNR and NBT-NS" in a["description"]
+          and any(t_["technique"] == "T1557.001" and t_["basis"] == "observed" for t_ in a["details"]["mitre"]))
+    check("...once a day per responder", PC.report(hit_) is False)
+    import service_watchdog
+    check("an optional unit is watched only once it is installed (no false 'service down' before the installer runs)",
+          ("soc-l2-watch" in service_watchdog.SERVICES) == Path("/etc/systemd/system/soc-l2-watch.service").exists())
+
+    late_dhcp, late_conn = tmp / "late_dhcp.log", tmp / "late_conn.log"
+    empty_zeek = tmp / "zeek_empty"
+    empty_zeek.mkdir()
+    l2 = subprocess.Popen([sys.executable, str(KALI / "l2_to_alerts.py"), "--follow", "--dhcp-log", str(late_dhcp),
+                           "--conn-log", str(late_conn)], env=dict(os.environ, SOC_ZEEK_DIR=str(empty_zeek)),
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        time.sleep(1.5)
+        check("the l2 follower waits for logs that do not exist yet instead of exiting", l2.poll() is None)
+        late_dhcp.write_text("#separator \\x09\n#fields\tts\tmac\tserver_addr\tmsg_types\tassigned_addr\n"
+                             "#types\ttime\tstring\taddr\tvector[string]\taddr\n"
+                             "1.0\taa:aa:aa:aa:aa:aa\t10.0.0.99\tOFFER\t10.0.0.120\n")
+        late_conn.write_text("#separator \\x09\n#fields\tts\tid.orig_h\tid.orig_p\tid.resp_h\tid.resp_p\tproto\n"
+                             "#types\ttime\taddr\tport\taddr\tport\tenum\n1.0\tfe80::abcd\t134\tff02::1\t0\ticmp\n")
+        deadline, got_dhcp, got_ra = time.time() + 8, False, False
+        while time.time() < deadline and not (got_dhcp and got_ra):
+            got_dhcp = got_dhcp or find(feed(), "Unknown DHCP server 10.0.0.99") is not None
+            got_ra = got_ra or find(feed(), "Unknown IPv6 router fe80::abcd") is not None
+            time.sleep(0.3)
+        check("...then raises both alerts from logs that appeared after it started (read from their first line)",
+              got_dhcp and got_ra, f"dhcp: {got_dhcp}, ra: {got_ra}")
+        check("...and publishes its parse health", all(reader_health.status(n_) is not None for n_ in ("l2_dhcp", "l2_conn")))
+    finally:
+        l2.terminate()
+        try:
+            l2.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            l2.kill()
 
     # ---- (added) API server with read and write keys ------------------------------
     group("api")
@@ -858,8 +1042,9 @@ def inner() -> int:
         check("a read-only key cannot create a suppression", _call("/api/suppressions", "t-read", "POST", {"reason": "x"})[0] == 403)
 
         code, d = _call("/api/watchlists")
-        check("GET /api/watchlists lists all six", code == 200 and {w["name"] for w in d["watchlists"]} ==
-              {"trusted_ips", "bad_ips", "bad_domains", "bad_hashes", "sensitive_vlans", "untrusted_vlans"})
+        check("GET /api/watchlists lists all eight", code == 200 and {w["name"] for w in d["watchlists"]} ==
+              {"trusted_ips", "bad_ips", "bad_domains", "bad_hashes", "dhcp_servers", "ra_sources", "sensitive_vlans",
+               "untrusted_vlans"})
         code, d = _call("/api/watchlists/trusted_ips")
         check("GET /api/watchlists/<name> serves one list", code == 200 and d["name"] == "trusted_ips")
         check("GET on an unknown watchlist name is a 404", _call("/api/watchlists/does-not-exist")[0] == 404)

@@ -45,6 +45,7 @@ from pathlib import Path
 SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
 from soc_core import Alert, emit_alert, diff_state_lock, record_asset_sightings  # noqa: E402
+import l2_watch  # noqa: E402
 
 DATA_DIR = Path(os.environ.get("SOC_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 DEFAULT_STATE = DATA_DIR / "mac_state.json"
@@ -161,6 +162,72 @@ def _emit_bulk(cidr: str, devices: list, randomized: bool, severity: str) -> int
     return 1
 
 
+def check_critical_addresses(current: dict, owners_path: Path) -> int:
+    """ARP poisoning and rogue gateways, from what the scan just saw. For each critical address
+    (gateway of every VLAN, DNS servers, trusted DHCP servers -- see l2_watch.critical_addresses):
+      * two MACs answering for it in the same scan is an address conflict or an active spoof;
+      * a different MAC than the last scan is the same thing happening between scans.
+    Either is critical. Both also happen innocently (a router failover, a replaced NIC, a virtual
+    machine restored on a new host), so the alert says to confirm with whoever runs that machine. The
+    first time an address is seen its MAC is recorded silently."""
+    critical = l2_watch.critical_addresses()
+    seen: dict = {}
+    for macs in current.values():
+        for mac, info in macs.items():
+            # arp-scan appends, in parentheses, the Ethernet source MAC when it differs from the MAC in the
+            # ARP reply -- for a VRRP/CARP gateway that is the physical firewall that answered ("00:00:5e:00:01:45
+            # (00:08:a2:12:b2:4a)"). Compare only the ARP MAC: the virtual one stays put when the two firewalls
+            # swap the master role, so a normal failover must not look like a hijack.
+            seen.setdefault(info["ip"], {})[mac.split()[0].lower()] = info
+    state = l2_watch.State(owners_path.with_name("l2_watch_state.json"))
+    n = 0
+    with diff_state_lock(owners_path):
+        try:
+            owners = json.loads(owners_path.read_text())
+        except (OSError, ValueError):
+            owners = {}
+        for ip, role in critical.items():
+            answers = seen.get(ip)
+            if not answers:
+                continue                                  # not seen this scan: say nothing
+            macs = sorted(answers)
+            vendors = ", ".join(f"{m} ({answers[m]['vendor'] or 'unknown vendor'})" for m in macs)
+            if len(macs) > 1:
+                if state.should_alert(f"arp-dup:{ip}:{','.join(macs)}"):
+                    emit_alert(Alert(
+                        type="intrusion", severity="critical", detector="arp_discovery", source_ip=ip,
+                        title=f"Two MAC addresses answer for critical address {ip} ({role}): {macs[0]}, {macs[1]}",
+                        description=(f"{ip} is this network's {role}, and in the same scan two different machines answered ARP "
+                                     f"for it: {vendors}. Either two machines share the address by mistake, or one is "
+                                     "impersonating the other (ARP poisoning: everything sent to that address can be read or "
+                                     "altered). A router pair with a virtual address can also do this legitimately -- confirm "
+                                     "with whoever runs that device."),
+                        details={"ip": ip, "role": role, "macs": macs, "change": "arp_conflict"}), echo=False)
+                    n += 1
+                continue
+            mac = macs[0]
+            previous = owners.get(ip)
+            if previous is None:
+                owners[ip] = mac                          # first sighting: record it silently
+            elif previous != mac:
+                if state.should_alert(f"arp-change:{ip}:{mac}"):
+                    emit_alert(Alert(
+                        type="intrusion", severity="critical", detector="arp_discovery", source_ip=ip,
+                        title=f"Critical address {ip} ({role}) is now answered by a different MAC: {mac} (was {previous})",
+                        description=(f"{ip} is this network's {role}. At the previous scan it belonged to {previous}; now it "
+                                     f"answers from {vendors}. That is what ARP poisoning or a rogue gateway looks like, and "
+                                     "also what a router failover, a replaced network card or a restored virtual machine look "
+                                     "like -- confirm with whoever runs that device before treating it as an attack."),
+                        details={"ip": ip, "role": role, "mac": mac, "previous_mac": previous, "change": "arp_owner_changed"}),
+                        echo=False)
+                    n += 1
+                owners[ip] = mac
+        tmp = owners_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(owners, indent=2))
+        os.replace(tmp, owners_path)
+    return n
+
+
 def run(assets_path: Path, state_path: Path) -> int:
     current = parse_assets(assets_path)
     n = 0
@@ -247,6 +314,11 @@ def run(assets_path: Path, state_path: Path) -> int:
         for cidr, macs in current.items():
             merged[cidr] = {**merged.get(cidr, {}), **macs}
         _save_state(state_path, merged)
+
+    try:
+        n += check_critical_addresses(current, state_path.with_name("critical_ip_owners.json"))
+    except Exception as e:  # noqa: BLE001 -- must never stop the inventory update
+        print(f"[!] arp_to_alerts: critical-address check skipped: {e}", file=sys.stderr)
 
     if sightings:
         created = record_asset_sightings(sightings)

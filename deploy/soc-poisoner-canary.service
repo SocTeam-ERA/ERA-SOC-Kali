@@ -1,0 +1,10 @@
+[Unit]
+Description=Sentinel SOC LLMNR / NBT-NS poisoner canary (asks for a made-up name; only a poisoner answers)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/kali
+Environment=SOC_MAX_SNAPSHOT=5000
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/kali/poisoner_canary.py

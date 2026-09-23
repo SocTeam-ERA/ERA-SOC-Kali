@@ -62,6 +62,13 @@ SOURCES: List[Dict[str, Any]] = [
      "reader": "dhcp_to_assets", "max_age_min": 0},
     {"id": "software_parsing", "name": "Software fingerprint enrichment (log parsing)", "kind": "reader",
      "reader": "software_to_assets", "max_age_min": 0},
+    {"id": "l2_dhcp_parsing", "name": "Rogue DHCP server detection (log parsing)", "kind": "reader",
+     "reader": "l2_dhcp", "max_age_min": 0},
+    {"id": "l2_conn_parsing", "name": "Rogue IPv6 router detection (log parsing)", "kind": "reader",
+     "reader": "l2_conn", "max_age_min": 0},
+    # the canary is a blind spot the moment it stops running: nobody would notice a poisoner
+    {"id": "poisoner_canary", "name": "LLMNR/NBT-NS poisoner canary", "kind": "timer",
+     "unit": "soc-poisoner-canary.timer", "max_age_min": 45},
 ]
 
 

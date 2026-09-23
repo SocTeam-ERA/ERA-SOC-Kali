@@ -705,8 +705,15 @@ def inner() -> int:
     from datetime import date
     today_ = date(2026, 9, 23)
     ws = lambda v, d=today_: host_facts.windows_support(v, d)
-    check("a Windows build whose support ended years ago is medium", (ws("10.0.19041") or {}).get("severity") == "medium"
-          and (ws("6.1.7601") or {}).get("severity") == "medium")
+    check("a Windows build whose support ended years ago is medium", (ws("6.1.7601") or {}).get("severity") == "medium"
+          and (ws("10.0.10240") or {}).get("severity") == "medium")
+    w10 = ws("10.0.19041")
+    check("build 19041 is named as a FAMILY (RDP cannot tell 2004 from 22H2), dated by its last mainstream edition",
+          w10 and "19041 family" in w10["label"] and w10["ended"] == "2025-10-14" and w10["severity"] == "normal"
+          and (host_facts.windows_support("10.0.19041", date(2026, 10, 15)) or {}).get("severity") == "medium")
+    check("build 22621 (Windows 11 22H2 or 23H2) is not called unsupported while 23H2 Enterprise is still covered, "
+          "and is after that ends",
+          ws("10.0.22621") is None and "22621 family" in (host_facts.windows_support("10.0.22621", date(2026, 11, 11)) or {}).get("label", ""))
     check("one that ended within the last year is only normal, and becomes medium after a year",
           (ws("10.0.19045") or {}).get("severity") == "normal"
           and (host_facts.windows_support("10.0.19045", date(2026, 10, 15)) or {}).get("severity") == "medium")
@@ -722,7 +729,7 @@ def inner() -> int:
     facts_xml.write_text("""<?xml version="1.0"?><nmaprun><host><status state="up"/>
 <address addr="10.69.9.1" addrtype="ipv4"/><hostnames/>
 <ports><port protocol="tcp" portid="3389"><state state="open"/><service name="ms-wbt-server" method="probed" conf="10"/>
-<script id="rdp-ntlm-info" output="x"><elem key="Product_Version">10.0.19041</elem><elem key="NetBIOS_Computer_Name">OLDPC</elem>
+<script id="rdp-ntlm-info" output="x"><elem key="Product_Version">6.1.7601</elem><elem key="NetBIOS_Computer_Name">OLDPC</elem>
 <elem key="DNS_Domain_Name">era.local</elem></script></port></ports>
 <hostscript><script id="smb2-security-mode" output="&#10;  3.1.1: &#10;    Message signing enabled but not required"/>
 <script id="nbstat" output="NetBIOS name: OLDPC, NetBIOS user: &lt;unknown&gt;"/></hostscript>
@@ -731,7 +738,7 @@ def inner() -> int:
     f1 = ex.get("10.69.9.1", {})
     check("the OS guess, Windows build, names and SMB signing are read from the scan's XML",
           f1.get("os") == {"name": "Microsoft Windows 10 2004", "accuracy": 96}
-          and f1.get("windows", {}).get("Product_Version") == "10.0.19041"
+          and f1.get("windows", {}).get("Product_Version") == "6.1.7601"
           and f1.get("smb_signing") == "not_required" and f1.get("netbios_name") == "OLDPC", str(f1))
     fnd = host_facts.findings(ex, {}, today_)
     check("that host yields exactly two findings: SMB signing (normal) and unsupported Windows (medium)",
@@ -753,7 +760,7 @@ def inner() -> int:
           find(new_alerts(n), "SMB signing not required") is None and find(new_alerts(n), "Unsupported Windows") is None)
     sf = soc_core.load_assets()["3c:bb:cc:00:00:01"].get("scan_facts", {})
     check("what the scan learned is kept on that host's asset record",
-          sf.get("windows", {}).get("Product_Version") == "10.0.19041" and sf.get("smb_signing") == "not_required"
+          sf.get("windows", {}).get("Product_Version") == "6.1.7601" and sf.get("smb_signing") == "not_required"
           and sf.get("os", {}).get("name") == "Microsoft Windows 10 2004", str(sf))
 
     check("record_asset_scan_facts never creates an asset, and an identical repeat changes nothing",
@@ -763,7 +770,7 @@ def inner() -> int:
     soc_core.record_asset_scan_facts([{"mac": "3c:bb:cc:00:00:01", "facts": {"smb_signing": "required"}}])
     sf = soc_core.load_assets()["3c:bb:cc:00:00:01"]["scan_facts"]
     check("a fact that is present replaces the old value, and facts missing from a later scan are kept",
-          sf["smb_signing"] == "required" and sf["windows"]["Product_Version"] == "10.0.19041")
+          sf["smb_signing"] == "required" and sf["windows"]["Product_Version"] == "6.1.7601")
 
     # ---- (added) watchlists ---------------------------------------------------
     group("watchlists")

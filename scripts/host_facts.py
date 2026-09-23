@@ -20,8 +20,9 @@ It does two things with it:
     support (no more security fixes).
 
 Honest limits, stated in the alerts too: nmap's OS guess is approximate and is only stored,
-never alerted on; a Windows build number from RDP is exact but says nothing about whether an
-extended-support contract covers it; and a build shared by a client and a server edition
+never alerted on; a Windows build number from RDP identifies the servicing family (Windows 10 2004
+through 22H2 all report 19041), not the exact release, and says nothing about whether an
+extended-support contract or a long-term-servicing edition covers it; and a build shared by a client and a server edition
 (Windows 10 1607 and Server 2016, 1809 and Server 2019, ...) is skipped rather than guessed.
 """
 from __future__ import annotations
@@ -51,13 +52,17 @@ _WINDOWS: Dict[str, tuple] = {
     "10.0.17134": ("Windows 10 1803", "2021-05-11"),
     "10.0.18362": ("Windows 10 1903", "2020-12-08"),
     "10.0.18363": ("Windows 10 1909", "2022-05-10"),
-    "10.0.19041": ("Windows 10 2004", "2021-12-14"),
+    # RDP/NTLM reports the BASE build of a servicing family, not the release: Windows 10 2004, 20H2,
+    # 21H1, 21H2 and 22H2 all answer 10.0.19041 (observed 2026-09: 5 hosts on 19041, none on 19042-19045),
+    # and Windows 11 22H2 and 23H2 both answer 10.0.22621. So those two rows name the family and use
+    # the date the family's last mainstream edition lost (or will lose) support.
+    "10.0.19041": ("Windows 10 (build 19041 family: 2004 to 22H2)", "2025-10-14"),
     "10.0.19042": ("Windows 10 20H2", "2023-05-09"),
     "10.0.19043": ("Windows 10 21H1", "2022-12-13"),
     "10.0.19044": ("Windows 10 21H2", "2024-06-11"),
     "10.0.19045": ("Windows 10 22H2", "2025-10-14"),
     "10.0.22000": ("Windows 11 21H2", "2024-10-08"),
-    "10.0.22621": ("Windows 11 22H2", "2025-10-14"),
+    "10.0.22621": ("Windows 11 (build 22621 family: 22H2 or 23H2)", "2026-11-10"),
     "10.0.22631": ("Windows 11 23H2", "2026-11-10"),
 }
 
@@ -149,9 +154,10 @@ def findings(facts_by_ip: Dict[str, Dict[str, Any]], hostnames: Dict[str, Option
                 title=f"Unsupported Windows on {ip}: {support['label']} (build {win['Product_Version']})",
                 source_ip=ip, hostname=name, detector="kali_scan",
                 description=(f"{support['label']} stopped receiving security updates on {support['ended']} (the last "
-                             "edition to lose support; earlier for some). The build number is read from the machine itself "
-                             "over RDP, so it is exact -- but a paid Extended Security Updates contract, if the machine has "
-                             "one, would still cover it."),
+                             "mainstream edition to lose support; earlier for some). The build is read from the machine itself "
+                             "over RDP, but it identifies the family only: newer releases of the same family report the same "
+                             "build, so the exact release cannot be told apart. A paid Extended Security Updates contract or a "
+                             "long-term-servicing (LTSC) edition would still be covered."),
                 details={"script": "rdp-ntlm-info", "product_version": win["Product_Version"],
                          "support_ended": support["ended"], "computer_name": name},
                 _key=f"{ip}:windows-support"))

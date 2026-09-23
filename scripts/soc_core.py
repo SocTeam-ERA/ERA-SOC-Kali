@@ -705,6 +705,16 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
     except Exception:
         pass
 
+    # 0f2) who / what the alert is about according to Active Directory, under
+    #      details["identity"] (see ad_identity.py; needs details.entities from 0f).
+    try:
+        from ad_identity import identity as _ad_identity
+        ident = _ad_identity(record)
+        if ident:
+            record.setdefault("details", {})["identity"] = ident
+    except Exception:
+        pass
+
     # 0g) threat-intel matches under details["threat_intel"] (see threat_intel.py)
     try:
         from threat_intel import enrich as _ti_enrich

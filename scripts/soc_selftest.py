@@ -954,6 +954,30 @@ def inner() -> int:
                                                           "title": "Kerberoastable account(s) in AD: svc_sql"})]
           == ["T1558.003"])
 
+    # identity on every alert (ad_identity.py via emit_alert); OLDPC is 10.69.9.1 in the scan-facts test above
+    (tmp / "ad_inventory.json").write_text(json.dumps({
+        "generated": "2026-09-23T12:00:00+00:00",
+        "computers": {"OLDPC": comp("OLDPC", "Windows 10 Pro", "10.0 (19045)")},
+        "users": {"jdoe": usr("jdoe")}, "privileged": {"Domain Admins": ["jdoe"]}}))
+    n = len(feed())
+    soc_core.emit_alert(soc_core.Alert(type="vuln", severity="normal", title="selftest identity by IP",
+                                       source_ip="10.69.9.1", detector="kali_scan"), echo=False)
+    soc_core.emit_alert(soc_core.Alert(type="intrusion", severity="normal", title="selftest identity by user",
+                                       user="ERA\\JDoe", detector="suricata"), echo=False)
+    soc_core.emit_alert(soc_core.Alert(type="intrusion", severity="normal", title="selftest local user",
+                                       user="jdoe", detector="login_monitor"), echo=False)
+    got = new_alerts(n)
+    i1 = (find(got, "selftest identity by IP") or {}).get("details", {}).get("identity", {})
+    i2 = (find(got, "selftest identity by user") or {}).get("details", {}).get("identity", {})
+    check("an alert about an IP gets the AD computer behind it (via the scan's NetBIOS name), with its OU and OS support",
+          (i1.get("computers") or [{}])[0].get("name") == "OLDPC" and i1["computers"][0]["ou"] == "Calgary/Accounting"
+          and i1["computers"][0]["os_support"] == "unsupported" and i1["computers"][0]["ip"] == "10.69.9.1", str(i1))
+    check("an alert about DOMAIN\\user gets the AD user, with its privileged groups",
+          (i2.get("users") or [{}])[0].get("sam") == "jdoe"
+          and i2["users"][0]["privileged_groups"] == ["Domain Admins"], str(i2))
+    check("a detector watching this appliance does not map its local users to AD",
+          "identity" not in (find(got, "selftest local user") or {}).get("details", {}))
+
     # ---- (added) watchlists ---------------------------------------------------
     group("watchlists")
     import watchlists as W

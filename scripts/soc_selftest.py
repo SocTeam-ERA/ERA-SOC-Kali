@@ -357,6 +357,10 @@ def inner() -> int:
             time.sleep(0.3)
         check("a log that appears later is read from its first line, header included (not from its end)", got_alert and got_asset,
               f"notice alert: {got_alert}, software enrichment: {got_asset}")
+        import reader_health
+        published = {n_: reader_health.status(n_) for n_ in ("zeek_to_alerts", "software_to_assets")}
+        check("a running follower publishes its parse health where source_health can read it (written on start, then at most "
+              "once a minute)", all(v_ is not None and v_["streak"] == 0 for v_ in published.values()), str(published))
     finally:
         for f in followers:
             f.terminate()
@@ -840,6 +844,85 @@ def inner() -> int:
     check("`since` excludes an entry older than the window",
           "selftest-ancient" not in {r["actor"] for r in soc_activity.feed(since="1h", limit=500)}
           and "selftest-ancient" in {r["actor"] for r in soc_activity.feed(limit=500)})
+
+    # ---- (added) reader health: a log the followers cannot parse must not go unnoticed -------------
+    group("reader health")
+    import reader_health
+    import source_health
+    from zeek_tsv import ZeekTSVReader
+    rd = ZeekTSVReader()
+    for _ in range(30):
+        rd.feed("#close\t2026-09-23")
+        rd.feed("")
+    check("comments and blank lines never count as unparsable", rd.unparsable == 0 and rd.unparsable_streak == 0)
+    rd.feed("1\t2")
+    check("a TSV row that arrives before any header counts as unparsable", rd.unparsable == 1 and rd.unparsable_streak == 1)
+    rd.feed('{"ts":1.0,"note":"X"}')
+    check("one good line resets the streak", rd.unparsable_streak == 0 and rd.parsed == 1)
+    rep = reader_health.Reporter("zeek_to_alerts", rd)
+    for _ in range(12):
+        rd.feed('{"broken')
+        rep.tick()
+    real_sources = source_health.SOURCES
+    source_health.SOURCES = [s_ for s_ in real_sources if s_["id"] == "zeek_notice_parsing"]
+    try:
+        st = source_health.check()[0]
+        check("a reader whose input stopped parsing is reported unhealthy",
+              st["status"] == "stale" and st["unparsable_in_a_row"] >= reader_health.UNHEALTHY_STREAK, str(st))
+        n = len(feed()); source_health.run()
+        a = find(new_alerts(n), "Log reader cannot parse its input")
+        check("...and raises one alert that names the likely cause (regression: Zeek's format flip went unnoticed for two days)",
+              a is not None and a["severity"] == "medium" and "TSV" in a["description"])
+        n = len(feed()); source_health.run()
+        check("...only once while it stays broken", find(new_alerts(n), "Log reader cannot parse") is None)
+        rd.feed('{"ts":2.0,"note":"Y"}')
+        rep.tick()
+        check("a good line ends the streak: healthy again", source_health.check()[0]["status"] == "healthy")
+        n = len(feed()); source_health.run()
+        check("...with a recovered alert", find(new_alerts(n), "Data source recovered: Zeek notice forwarder") is not None)
+    finally:
+        source_health.SOURCES = real_sources
+
+    # ---- (added) code freshness: a service still running code older than what is on disk ---------
+    group("code freshness")
+    import code_freshness as CF
+    cf = tmp / "cf"
+    (cf / "scripts").mkdir(parents=True)
+    (cf / "kali").mkdir()
+    (cf / "scripts" / "deep.py").write_text("X = 1\n")
+    (cf / "scripts" / "mid.py").write_text("def f():\n    import deep\n")   # a lazy import inside a function still loads
+    (cf / "kali" / "svc.py").write_text("import json\nfrom mid import f\n")
+    for name_, mtime_ in (("scripts/deep.py", 1000), ("scripts/mid.py", 500), ("kali/svc.py", 400)):
+        os.utime(cf / name_, (mtime_, mtime_))
+    newest_m, newest_f = CF.newest_code(cf / "kali" / "svc.py", [cf / "scripts", cf / "kali"])
+    check("the newest file a service's code is made of is found through nested and lazy imports",
+          newest_f.name == "deep.py" and newest_m == 1000, f"{newest_f} {newest_m}")
+    check("stale means edited after the service started, and not in the last hour",
+          CF.is_stale(100, 5000, 100000) and not CF.is_stale(100, 50, 100000)
+          and not CF.is_stale(100, 99999, 100000) and not CF.is_stale(100, 101, 100000))
+    real_sysctl = CF._systemctl
+    CF._systemctl = lambda unit, *props: ("{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 "
+                                          f"{SUITE}/kali/zeek_to_alerts.py --follow ; ignore_errors=no }}")
+    check("the script a unit runs is read from its ExecStart", CF.service_script("x") == SUITE / "kali" / "zeek_to_alerts.py")
+    CF._systemctl = lambda unit, *props: "{ path=/usr/bin/suricata ; argv[]=/usr/bin/suricata -c /etc/suricata.yaml ; ignore_errors=no }"
+    check("a unit that runs something other than this project's code is skipped", CF.service_script("x") is None)
+    CF._systemctl = real_sysctl
+    fake = [{"unit": "soc-fake", "started": 1.0, "edited": 2.0, "file": "kali/x.py"}]
+    real_stale = CF.stale_services
+    CF.stale_services = lambda units, grace=CF.GRACE_SECONDS: fake
+    try:
+        n = len(feed()); CF.run(["soc-fake"])
+        a = find(new_alerts(n), "running older code")
+        check("a stale service raises one normal-severity alert with the restart command",
+              a is not None and a["severity"] == "normal" and "systemctl restart soc-fake" in a["description"])
+        n = len(feed()); CF.run(["soc-fake"])
+        check("...and does not repeat while nothing changes", find(new_alerts(n), "running older code") is None)
+        fake = []
+        CF.run(["soc-fake"])
+        check("...and resolves itself once every service runs the current code",
+              {x_["id"]: x_ for x_ in feed()}[a["id"]]["status"] == "resolved")
+    finally:
+        CF.stale_services = real_stale
 
     print(json.dumps([{"name": n_, "ok": ok_, "detail": d} for n_, ok_, d in results]))
     return 0

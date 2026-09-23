@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -78,6 +79,24 @@ class ZeekTSVReader:
     def __init__(self) -> None:
         self._fields: Optional[List[str]] = None
         self._types: Optional[List[str]] = None
+        # Health counters (see reader_health.py). A DATA line that could not be parsed is not
+        # noise: a stream where nothing parses is a broken reader, and the streak is what tells
+        # that apart from a quiet log. Headers, comments and blank lines are not data and never count.
+        self.parsed = 0
+        self.unparsable = 0
+        self.unparsable_streak = 0   # unparsable data lines since the last one that parsed
+        self.last_parsed: Optional[float] = None   # time.time() of the last parsed row
+
+    def _bad(self) -> None:
+        self.unparsable += 1
+        self.unparsable_streak += 1
+        return None
+
+    def _good(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        self.parsed += 1
+        self.unparsable_streak = 0
+        self.last_parsed = time.time()
+        return row
 
     @property
     def ready(self) -> bool:
@@ -92,8 +111,8 @@ class ZeekTSVReader:
             try:
                 obj = json.loads(line)
             except ValueError:
-                return None
-            return obj if isinstance(obj, dict) else None
+                return self._bad()
+            return self._good(obj) if isinstance(obj, dict) else self._bad()
         if line.startswith("#fields\t"):
             self._fields = line.split("\t")[1:]
             self._types = None  # a new file's layout: drop the previous file's types until its own #types line
@@ -104,12 +123,12 @@ class ZeekTSVReader:
         if line[0] == "#":
             return None  # #separator, #set_separator, #empty_field, #unset_field, #path, #open, #close
         if self._fields is None:
-            return None  # a TSV row with no header seen yet this run -- can't map it safely
+            return self._bad()  # a TSV row with no header seen yet this run -- can't map it safely
         values = line.split("\t")
         if len(values) != len(self._fields):
-            return None  # malformed/truncated line (e.g. a write caught mid-flush)
+            return self._bad()  # malformed/truncated line (e.g. a write caught mid-flush)
         types = self._types if self._types and len(self._types) == len(self._fields) else [None] * len(values)
-        return {name: _convert(v, t) for name, v, t in zip(self._fields, values, types)}
+        return self._good({name: _convert(v, t) for name, v, t in zip(self._fields, values, types)})
 
 
 # The name most call sites want: it reads either format.

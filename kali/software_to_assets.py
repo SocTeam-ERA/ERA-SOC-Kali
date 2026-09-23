@@ -40,6 +40,7 @@ SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.par
 sys.path.insert(0, str(SCRIPTS))
 from soc_core import record_asset_software, build_ip_to_mac_map, tail_follow  # noqa: E402
 from zeek_tsv import ZeekTSVReader, read_header_lines  # noqa: E402
+from reader_health import Reporter  # noqa: E402
 
 DEFAULT_LOG = Path("/opt/zeek/logs/current/software.log")
 # How long a cached ip-to-MAC mapping is trusted before rebuilding it from the asset
@@ -88,8 +89,10 @@ def process_file(path: Path, follow: bool) -> int:
             reader.feed(header)
         cache = _MapCache()
         n = 0
+        health = Reporter("software_to_assets", reader)
         for line in tail_follow(path, from_start=appears_later):
             row = reader.feed(line)
+            health.tick()
             sighting = _extract(row) if row else None
             if not sighting:
                 continue

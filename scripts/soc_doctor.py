@@ -23,7 +23,7 @@ Usage:
     python3 soc_doctor.py
 """
 from __future__ import annotations
-import grp, json, os, shutil, subprocess, sys
+import grp, json, os, shutil, subprocess, sys, time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -126,6 +126,18 @@ def check_scan_marker() -> None:
     if alive:
         check(OK if not stale else WARN,
               f"scan_in_progress has {len(alive)} genuinely active scan(s): {alive}")
+
+
+def check_code_freshness() -> None:
+    import code_freshness
+    stale = code_freshness.stale_services(SERVICES, grace=0)
+    if not stale:
+        check(OK, "services: every one runs the code that is on disk")
+    for r in stale:
+        check(WARN, f"{r['unit']}: running older code -- {r['file']} changed "
+                    f"{time.strftime('%m-%d %H:%M', time.localtime(r['edited']))}, service started "
+                    f"{time.strftime('%m-%d %H:%M', time.localtime(r['started']))} "
+                    f"(sudo systemctl restart {r['unit']})")
 
 
 def check_services() -> None:
@@ -315,6 +327,7 @@ def main() -> int:
         ("shared state file permissions", check_permissions),
         ("scan marker", check_scan_marker),
         ("services", check_services),
+        ("service code freshness", check_code_freshness),
         ("timers", check_timers),
         ("disk space", check_disk),
         ("last scheduled scan", check_last_scan),

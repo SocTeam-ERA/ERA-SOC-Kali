@@ -34,6 +34,7 @@ SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.par
 sys.path.insert(0, str(SCRIPTS))
 from soc_core import Alert, emit_alert, resolve_hostname, scan_active, tail_follow  # noqa: E402
 from zeek_tsv import ZeekTSVReader, read_header_lines  # noqa: E402
+from reader_health import Reporter  # noqa: E402
 
 DATA_DIR = Path(os.environ.get("SOC_DATA_DIR", Path(__file__).resolve().parent.parent / "data"))
 DEFAULT_LOG = Path("/opt/zeek/logs/current/notice.log")
@@ -148,8 +149,10 @@ def process_file(path: Path, follow: bool) -> int:
         # replaces the live file at this path when it rotates), the same
         # way it handles logrotate for the other detectors -- see
         # soc_core.tail_follow()'s docstring.
+        health = Reporter("zeek_to_alerts", reader)  # lets source_health notice a format this reader cannot parse
         for line in tail_follow(path, from_start=appears_later):
             event = reader.feed(line)
+            health.tick()
             if event and handle_event(event):
                 n += 1
         return n

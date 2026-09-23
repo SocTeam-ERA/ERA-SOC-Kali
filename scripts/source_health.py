@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from soc_core import Alert, DATA_DIR, emit_alert  # noqa: E402
+import reader_health  # noqa: E402
 
 STATE_FILE = DATA_DIR / "source_health.json"
 
@@ -52,6 +53,15 @@ SOURCES: List[Dict[str, Any]] = [
      "unit": "soc-vlan-segmentation.timer", "max_age_min": 26 * 60},
     {"id": "threat_intel", "name": "Threat-intel feeds", "kind": "meta", "max_age_min": 72 * 60},
     {"id": "backup", "name": "SOC data backup", "kind": "backup", "max_age_min": 26 * 60},
+    # kind "reader": not "is data arriving" but "can the follower still parse it" (reader_health.py).
+    # Zeek's format flipped from JSON to TSV on 2026-09-21 and these three read it blind for two days
+    # while the log kept growing and every service stayed "active".
+    {"id": "zeek_notice_parsing", "name": "Zeek notice forwarder (log parsing)", "kind": "reader",
+     "reader": "zeek_to_alerts", "max_age_min": 0},
+    {"id": "dhcp_parsing", "name": "DHCP hostname enrichment (log parsing)", "kind": "reader",
+     "reader": "dhcp_to_assets", "max_age_min": 0},
+    {"id": "software_parsing", "name": "Software fingerprint enrichment (log parsing)", "kind": "reader",
+     "reader": "software_to_assets", "max_age_min": 0},
 ]
 
 
@@ -88,8 +98,22 @@ def check() -> List[Dict[str, Any]]:
     now = time.time()
     out = []
     for src in SOURCES:
-        last = _last_event(src)
         rec = {"id": src["id"], "name": src["name"], "kind": src["kind"], "max_age_minutes": src["max_age_min"]}
+        if src["kind"] == "reader":
+            entry = reader_health.status(src["reader"])
+            if entry is None:
+                rec.update(status="unknown", last_event=None, age_minutes=None)  # follower never ran / not installed
+            else:
+                ok_at = entry.get("last_parsed_at")
+                try:
+                    age = round((now - datetime.fromisoformat(ok_at).timestamp()) / 60, 1) if ok_at else None
+                except ValueError:
+                    age = None
+                rec.update(status="stale" if reader_health.is_unhealthy(entry) else "healthy",
+                           last_event=ok_at, age_minutes=age, unparsable_in_a_row=int(entry.get("streak") or 0))
+            out.append(rec)
+            continue
+        last = _last_event(src)
         if last is None:
             rec.update(status="unknown", last_event=None, age_minutes=None)
         else:
@@ -127,7 +151,18 @@ def run() -> List[Dict[str, Any]]:
     for rec in current:
         was = previous.get(rec["id"], {}).get("status")
         rec["since"] = previous.get(rec["id"], {}).get("since", now) if was == rec["status"] else now
-        if rec["status"] == "stale" and was != "stale":
+        if rec["status"] == "stale" and was != "stale" and rec["kind"] == "reader":
+            emit_alert(Alert(
+                type="intrusion", severity="medium", detector="source_health",
+                title=f"Log reader cannot parse its input: {rec['name']}",
+                description=(f"{rec['name']} has read {rec.get('unparsable_in_a_row')} lines in a row that it could not "
+                             "parse, with none succeeding in between. The log is being written and the service is running, "
+                             "so nothing else notices: this is what happened when Zeek switched from JSON to TSV logs "
+                             "(2026-09-21) and its forwarders saw nothing for two days. Check the format of the log it "
+                             "reads, and whether Zeek's configuration changed (a package upgrade can replace local.zeek)."),
+                details={"source": rec["id"], "unparsable_in_a_row": rec.get("unparsable_in_a_row"),
+                         "last_parsed_at": rec.get("last_event"), "change": "unparseable"}), echo=False)
+        elif rec["status"] == "stale" and was != "stale":
             emit_alert(Alert(
                 type="intrusion", severity="medium", detector="source_health",
                 title=f"Data source silent: {rec['name']}",
@@ -139,7 +174,8 @@ def run() -> List[Dict[str, Any]]:
             emit_alert(Alert(
                 type="intrusion", severity="normal", detector="source_health",
                 title=f"Data source recovered: {rec['name']}",
-                description=f"'{rec['name']}' is producing data again.",
+                description=(f"'{rec['name']}' is parsing its input again." if rec["kind"] == "reader"
+                             else f"'{rec['name']}' is producing data again."),
                 details={"source": rec["id"], "change": "recovered"}), echo=False)
     _save_state({"checked": now, "sources": current})
     return current
@@ -148,4 +184,5 @@ def run() -> List[Dict[str, Any]]:
 if __name__ == "__main__":
     for s in run():
         age = "n/a" if s["age_minutes"] is None else f"{s['age_minutes']:.0f} min ago"
-        print(f"  [{s['status']:7}] {s['name']:28} last data {age} (limit {s['max_age_minutes']} min)")
+        limit = "parse check" if s["kind"] == "reader" else f"limit {s['max_age_minutes']} min"
+        print(f"  [{s['status']:7}] {s['name']:28} last data {age} ({limit})")

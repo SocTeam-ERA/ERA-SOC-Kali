@@ -42,6 +42,7 @@ SERVICES = [
     "soc-zeek-forwarder",
     "soc-zeek-boot",
     "soc-dhcp-fingerprint",
+    "soc-software-fingerprint",
     "osqueryd",
     "suricata",
 ]
@@ -116,6 +117,14 @@ def run() -> int:
         source_health.run()
     except Exception as e:
         print(f"[watchdog] source health check failed: {e}", file=sys.stderr)
+
+    # A service loads its code once, at start; flag the ones still running code older than the files
+    # on disk (a fix committed but never restarted onto). Kept separate, like the check above.
+    try:
+        import code_freshness
+        code_freshness.run(SERVICES)
+    except Exception as e:
+        print(f"[watchdog] code freshness check failed: {e}", file=sys.stderr)
 
     # Close informational change alerts nobody reviewed (acts at most every 6 hours).
     try:

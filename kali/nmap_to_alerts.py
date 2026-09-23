@@ -38,7 +38,8 @@ from pathlib import Path
 # make soc_core importable
 SCRIPTS = Path(os.environ.get("SOC_SCRIPTS", Path(__file__).resolve().parent.parent / "scripts"))
 sys.path.insert(0, str(SCRIPTS))
-from soc_core import Alert, emit_alert, diff_state_lock, load_assets, build_ip_to_mac_map  # noqa: E402
+from soc_core import Alert, emit_alert, diff_state_lock, load_assets, build_ip_to_mac_map, record_asset_scan_facts  # noqa: E402
+import host_facts  # noqa: E402
 
 HIGH_RISK_PORTS = {21, 23, 135, 139, 445, 1433, 3306, 3389, 5432, 5900, 6379, 27017, 9200}
 
@@ -544,8 +545,21 @@ def _update_seen(prev_seen: dict, ports: dict, now: datetime) -> dict:
     return keep
 
 
+def _use_scan_facts(xml_path: Path, hostnames: dict, vulns: list) -> None:
+    """Add what the scan learned about each host (see host_facts.py) to the findings and to the
+    asset inventory. It must never stop the port import, so a failure here only prints."""
+    try:
+        facts = host_facts.extract(xml_path)
+        vulns.extend(host_facts.findings(facts, hostnames))
+        ip_to_mac = build_ip_to_mac_map()
+        record_asset_scan_facts([{"mac": ip_to_mac[ip], "facts": f} for ip, f in facts.items() if ip in ip_to_mac])
+    except Exception as e:  # noqa: BLE001
+        print(f"[!] scan facts skipped: {e}", file=sys.stderr)
+
+
 def run(xml_path: Path, baseline: set, diff_state: Path | None) -> int:
     current, hostnames, vulns = parse_xml(xml_path)
+    _use_scan_facts(xml_path, hostnames, vulns)
     n = vuln_n = _run_vulns(vulns, diff_state)
 
     if diff_state is None:

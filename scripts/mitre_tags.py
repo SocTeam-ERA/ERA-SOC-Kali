@@ -44,6 +44,7 @@ TECHNIQUES: Dict[str, tuple] = {
     "T1548.001": ("Setuid and Setgid", ["Privilege Escalation", "Defense Evasion"]),
     "T1566":     ("Phishing", ["Initial Access"]),
     "T1574.006": ("Dynamic Linker Hijacking", ["Persistence", "Privilege Escalation", "Defense Evasion"]),
+    "T1557.001": ("LLMNR/NBT-NS Poisoning and SMB Relay", ["Credential Access", "Collection"]),
     "T1021.001": ("Remote Desktop Protocol", ["Lateral Movement"]),
     "T1021.002": ("SMB/Windows Admin Shares", ["Lateral Movement"]),
     "T1021.004": ("SSH", ["Lateral Movement"]),
@@ -71,6 +72,7 @@ _TITLE_RULES: List[tuple] = [
     ("osquery",        r"^setuid/setgid binary",                    [("T1548.001", "observed")]),
     ("osquery",        r"^Scheduled task:",                         [("T1053.003", "observed")]),
     ("phishing_detector", r"^Phishing indicators",                  [("T1566", "observed")]),
+    ("kali_scan",      r"^SMB signing not required",                [("T1557.001", "exposure")]),
 ]
 _TITLE_RULES = [(d, re.compile(rx), t) for d, rx, t in _TITLE_RULES]
 

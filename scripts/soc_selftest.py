@@ -699,6 +699,72 @@ def inner() -> int:
     got = new_alerts(n)
     check("4 new ports stay individual", sum(a_["title"].startswith("NEW open port ") for a_ in got) == 4, str([a_["title"] for a_ in got]))
 
+    # ---- (added) what the scan already learns: SMB signing, Windows builds ---------------------------
+    group("scan facts")
+    import host_facts
+    from datetime import date
+    today_ = date(2026, 9, 23)
+    ws = lambda v, d=today_: host_facts.windows_support(v, d)
+    check("a Windows build whose support ended years ago is medium", (ws("10.0.19041") or {}).get("severity") == "medium"
+          and (ws("6.1.7601") or {}).get("severity") == "medium")
+    check("one that ended within the last year is only normal, and becomes medium after a year",
+          (ws("10.0.19045") or {}).get("severity") == "normal"
+          and (host_facts.windows_support("10.0.19045", date(2026, 10, 15)) or {}).get("severity") == "medium")
+    check("a supported build, one shared with a supported Server release, and a build we do not know raise nothing",
+          ws("10.0.26100") is None and ws("10.0.17763") is None and ws("10.0.22631") is None and ws("garbage") is None
+          and ws(None) is None)
+    check("SMB signing is read from the script output",
+          host_facts.parse_smb_signing("3.1.1: Message signing enabled and required") == "required"
+          and host_facts.parse_smb_signing("3.1.1: Message signing enabled but not required") == "not_required"
+          and host_facts.parse_smb_signing("nothing useful") is None)
+
+    facts_xml = tmp / "facts_scan.xml"
+    facts_xml.write_text("""<?xml version="1.0"?><nmaprun><host><status state="up"/>
+<address addr="10.69.9.1" addrtype="ipv4"/><hostnames/>
+<ports><port protocol="tcp" portid="3389"><state state="open"/><service name="ms-wbt-server" method="probed" conf="10"/>
+<script id="rdp-ntlm-info" output="x"><elem key="Product_Version">10.0.19041</elem><elem key="NetBIOS_Computer_Name">OLDPC</elem>
+<elem key="DNS_Domain_Name">era.local</elem></script></port></ports>
+<hostscript><script id="smb2-security-mode" output="&#10;  3.1.1: &#10;    Message signing enabled but not required"/>
+<script id="nbstat" output="NetBIOS name: OLDPC, NetBIOS user: &lt;unknown&gt;"/></hostscript>
+<os><osmatch name="Microsoft Windows 10 2004" accuracy="96"/></os></host></nmaprun>""")
+    ex = host_facts.extract(facts_xml)
+    f1 = ex.get("10.69.9.1", {})
+    check("the OS guess, Windows build, names and SMB signing are read from the scan's XML",
+          f1.get("os") == {"name": "Microsoft Windows 10 2004", "accuracy": 96}
+          and f1.get("windows", {}).get("Product_Version") == "10.0.19041"
+          and f1.get("smb_signing") == "not_required" and f1.get("netbios_name") == "OLDPC", str(f1))
+    fnd = host_facts.findings(ex, {}, today_)
+    check("that host yields exactly two findings: SMB signing (normal) and unsupported Windows (medium)",
+          sorted((x_["title"].split(" on ")[0], x_["severity"]) for x_ in fnd)
+          == [("SMB signing not required", "normal"), ("Unsupported Windows", "medium")], str([x_["title"] for x_ in fnd]))
+
+    n = len(feed())
+    N.run(facts_xml, {22}, tmp / "scanfacts_state.json")
+    got = new_alerts(n)
+    a_smb = find(got, "SMB signing not required on 10.69.9.1")
+    a_win = find(got, "Unsupported Windows on 10.69.9.1")
+    check("the scan import raises both findings, with the computer name from RDP",
+          a_smb is not None and a_win is not None and a_win["hostname"] == "OLDPC" and a_win["severity"] == "medium")
+    check("...and tags SMB signing MITRE T1557.001 (relay exposure), but not the Windows finding (no honest mapping)",
+          "T1557.001" in tags(a_smb) and not tags(a_win))
+    n = len(feed())
+    N.run(facts_xml, {22}, tmp / "scanfacts_state.json")
+    check("...and does not raise them again on the next scan (regression guard: findings alert once)",
+          find(new_alerts(n), "SMB signing not required") is None and find(new_alerts(n), "Unsupported Windows") is None)
+    sf = soc_core.load_assets()["3c:bb:cc:00:00:01"].get("scan_facts", {})
+    check("what the scan learned is kept on that host's asset record",
+          sf.get("windows", {}).get("Product_Version") == "10.0.19041" and sf.get("smb_signing") == "not_required"
+          and sf.get("os", {}).get("name") == "Microsoft Windows 10 2004", str(sf))
+
+    check("record_asset_scan_facts never creates an asset, and an identical repeat changes nothing",
+          soc_core.record_asset_scan_facts([{"mac": "00:00:00:00:00:98", "facts": {"os": {"name": "x"}}}]) == 0
+          and "00:00:00:00:00:98" not in soc_core.load_assets()
+          and soc_core.record_asset_scan_facts([{"mac": "3c:bb:cc:00:00:01", "facts": {"smb_signing": "not_required"}}]) == 0)
+    soc_core.record_asset_scan_facts([{"mac": "3c:bb:cc:00:00:01", "facts": {"smb_signing": "required"}}])
+    sf = soc_core.load_assets()["3c:bb:cc:00:00:01"]["scan_facts"]
+    check("a fact that is present replaces the old value, and facts missing from a later scan are kept",
+          sf["smb_signing"] == "required" and sf["windows"]["Product_Version"] == "10.0.19041")
+
     # ---- (added) watchlists ---------------------------------------------------
     group("watchlists")
     import watchlists as W

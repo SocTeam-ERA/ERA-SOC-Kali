@@ -1093,6 +1093,33 @@ def record_asset_software(sightings: list) -> int:
     return changed
 
 
+def record_asset_scan_facts(sightings: list) -> int:
+    """Keep what the periodic nmap scan learned about a host (its OS guess, the Windows build and
+    computer/domain names from RDP, whether SMB signing is required -- see scripts/host_facts.py)
+    on the EXISTING asset record, under `scan_facts`. Same contract as record_asset_software():
+    never creates an asset, and only rewrites the file when something actually changed. Each
+    sighting is {"mac", "facts"}. A fact missing from a later scan (the host was asleep, a script
+    timed out) is kept, not erased; a fact that is present replaces the old value. Returns how
+    many asset records changed."""
+    now = datetime.now(timezone.utc).isoformat()
+    changed = 0
+    with diff_state_lock(ASSETS_FILE):
+        assets = load_assets()
+        for sg in sightings:
+            rec = assets.get(sg["mac"])
+            if rec is None or not sg.get("facts"):
+                continue
+            old = {k: v for k, v in (rec.get("scan_facts") or {}).items() if k != "updated"}
+            merged = {**old, **sg["facts"]}
+            if merged == old:
+                continue
+            rec["scan_facts"] = {**merged, "updated": now}
+            changed += 1
+        if changed:
+            _save_assets(assets)
+    return changed
+
+
 def set_asset_annotation(mac: str, *, owner: Optional[str] = None,
                           notes: Optional[str] = None,
                           authorized: Optional[bool] = None,

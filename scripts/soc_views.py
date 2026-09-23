@@ -353,6 +353,7 @@ DETECTORS = {
     "disk_space_check": ("Disk space", "Disk usage of this appliance."),
     "system_updates": ("System updates", "Pending package updates."),
     "soc_doctor": ("Pipeline health check", "Permission and scan-marker problems."),
+    "ad_inventory": ("Active Directory inventory", "Privileged group changes, new accounts, unsupported Windows and machines outside the domain."),
     "correlation": ("Correlation engine", "Incidents opened from related alerts."),
 }
 

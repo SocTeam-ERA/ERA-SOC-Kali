@@ -782,6 +782,95 @@ def inner() -> int:
     check("a fact that is present replaces the old value, and facts missing from a later scan are kept",
           sf["smb_signing"] == "required" and sf["windows"]["Product_Version"] == "6.1.7601")
 
+    # ---- (added) Active Directory inventory (no LDAP here: the pure parts) ----------------------------
+    group("ad inventory")
+    import ad_inventory as AD
+    d0 = date(2026, 9, 23)
+    sup = lambda os_, v, d=d0: AD.os_support(os_, v, d)
+    check("AD's operatingSystemVersion is parsed to a build",
+          AD.parse_build("10.0 (26100)") == 26100 and AD.parse_build("6.3 (9600)") == 9600 and AD.parse_build(None) is None)
+    check("Windows 10 22H2 is unsupported whatever the edition; 24H2 Pro is ending soon; 25H2 is supported",
+          sup("Windows 10 Pro", "10.0 (19045)")["status"] == "unsupported"
+          and sup("Windows 10 Enterprise", "10.0 (19045)")["status"] == "unsupported"
+          and sup("Windows 11 Pro", "10.0 (26100)")["status"] == "ending_soon"
+          and sup("Windows 11 Pro", "10.0 (26200)")["status"] == "supported")
+    check("the edition picks the date: 23H2 Pro ended, 23H2 Enterprise still supported; Pro Education follows Pro",
+          sup("Windows 11 Pro", "10.0 (22631)")["status"] == "unsupported"
+          and sup("Windows 11 Enterprise", "10.0 (22631)")["ends"] == "2026-11-10"
+          and sup("Windows 11 Pro Education", "10.0 (22631)")["track"] == "Home/Pro"
+          and sup("Windows 11 Education", "10.0 (22631)")["track"] == "Enterprise/Education")
+    check("servers use their own table; LTSC, non-Windows and unknown builds are left alone",
+          sup("Windows Server 2019 Standard", "10.0 (17763)")["status"] == "supported"
+          and sup("Windows Server 2012 R2 Standard", "6.3 (9600)")["status"] == "unsupported"
+          and sup("Windows 10 Enterprise LTSC", "10.0 (17763)") is None and sup("Linux", "5.4") is None
+          and sup("Windows 11 Pro", "10.0 (99999)") is None and sup(None, None) is None)
+    check("the OU path is read from the DN", AD._ou("CN=PC1,OU=Accounting,OU=Calgary,DC=era,DC=local") == "Calgary/Accounting")
+
+    def comp(name, os_, ver, last="2026-09-20", enabled=True):
+        return {"name": name, "dns": f"{name.lower()}.era.local", "os": os_, "os_version": ver, "build": AD.parse_build(ver),
+                "enabled": enabled, "last_logon": f"{last}T00:00:00+00:00" if last else None,
+                "created": "2024-01-01T00:00:00+00:00", "ou": "Calgary/Accounting", "support": AD.os_support(os_, ver, d0)}
+
+    def usr(sam, last="2026-09-20", enabled=True):
+        return {"sam": sam, "display": sam.title(), "enabled": enabled,
+                "last_logon": f"{last}T00:00:00+00:00" if last else None, "created": "2024-01-01T00:00:00+00:00", "ou": "Calgary"}
+
+    snap1 = {"generated": "2026-09-23T12:00:00+00:00",
+             "computers": {"OLD10": comp("OLD10", "Windows 10 Pro", "10.0 (19045)"),
+                           "NEW24": comp("NEW24", "Windows 11 Pro", "10.0 (26100)"),
+                           "GONE": comp("GONE", "Windows 10 Pro", "10.0 (19045)", last="2025-01-01"),
+                           "AZUREADSSOACC": comp("AZUREADSSOACC", None, None, last=None)},
+             "users": {"ana": usr("ana"), "lyndsay": usr("lyndsay", last="2025-12-01"), "krbtgt": usr("krbtgt", last=None)},
+             "privileged": {"Domain Admins": ["administrator", "ana"]}}
+    al1, st1 = AD.evaluate(snap1, {}, {"OLD10": "10.69.1.10", "ROGUE-PC": "10.69.1.99", "TEST-WIN10": "10.69.250.11"}, d0,
+                           ["TEST-*"])
+    t1 = [x_["title"] for x_ in al1]
+    check("first run: one baseline alert for the privileged members, and no 'new computer/user' flood",
+          "AD privileged group members recorded (baseline)" in t1 and not any(x_.startswith("New ") for x_ in t1), str(t1))
+    w = next((x_ for x_ in al1 if x_["title"].startswith("Unsupported Windows (per AD) on OLD10")), None)
+    check("an unsupported active PC alerts with its IP from the scan; a stale one does not (it is in the stale list instead)",
+          w is not None and w["source_ip"] == "10.69.1.10" and w["type"] == "vuln"
+          and not any("on GONE" in x_ for x_ in t1), str(t1))
+    check("a release losing support within the warning window is one grouped alert",
+          any(x_.startswith("1 computer(s) lose Windows support on 2026-10-13") for x_ in t1), str(t1))
+    check("stale computers and users are summarised, never-sign-in built-ins excluded",
+          st1["stale_computers"] == ["GONE"] and st1["stale_users"] == ["lyndsay"], str((st1["stale_computers"], st1["stale_users"])))
+    check("a Windows machine on the network that AD does not know alerts (medium); an ignored pattern does not",
+          any(x_ == "Windows host not in the domain: ROGUE-PC (10.69.1.99)" for x_ in t1)
+          and not any("TEST-WIN10" in x_ for x_ in t1))
+
+    snap2 = json.loads(json.dumps(snap1))
+    snap2["privileged"]["Domain Admins"] = ["administrator", "mallory"]
+    snap2["computers"]["LAPTOP9"] = comp("LAPTOP9", "Windows 11 Pro", "10.0 (26200)")
+    snap2["users"]["mallory"] = usr("mallory")
+    al2, st2 = AD.evaluate(snap2, st1, {"OLD10": "10.69.1.10", "ROGUE-PC": "10.69.1.99"}, d0, ["TEST-*"])
+    by = {x_["title"]: x_ for x_ in al2}
+    check("next day: an addition to Domain Admins is critical, a removal is normal",
+          by.get("Added to Domain Admins: mallory", {}).get("severity") == "critical"
+          and by.get("Removed from Domain Admins: ana", {}).get("severity") == "normal", str(list(by)))
+    check("...new computer and user accounts are reported once each",
+          "New computer in AD: LAPTOP9" in by and "New user account in AD: mallory (Mallory)" in by, str(list(by)))
+    check("...and nothing already reported comes back (unsupported PC, ending-soon group, stale lists, not-in-domain host)",
+          not any(x_.startswith(("Unsupported Windows", "1 computer(s) lose", "Windows host not in")) or "unused for" in x_
+                  for x_ in by), str(list(by)))
+    snap3 = json.loads(json.dumps(snap2))
+    snap3["computers"]["OLD10"] = comp("OLD10", "Windows 11 Pro", "10.0 (26200)")
+    al3, st3 = AD.evaluate(snap3, st2, {}, d0)
+    check("an upgraded PC leaves the unsupported list quietly", "OLD10" not in st3["unsupported"] and not al3, str(al3))
+    many = json.loads(json.dumps(snap3))
+    for i_ in range(AD.MAX_INDIVIDUAL_NEW + 5):
+        many["computers"][f"BULK{i_}"] = comp(f"BULK{i_}", "Windows 11 Pro", "10.0 (26200)")
+    al4, _ = AD.evaluate(many, st3, {}, d0)
+    check("a burst of new objects (re-baseline) is one summary alert, not one per object",
+          [x_["title"] for x_ in al4] == [f"{AD.MAX_INDIVIDUAL_NEW + 5} new computers in AD"], str([x_["title"] for x_ in al4]))
+
+    AD.STATE_FILE = tmp / "ad_inventory_state.json"
+    n = len(feed())
+    AD._failure({}, "ConnectionError: 10.69.0.14: bind refused", False)
+    AD._failure(json.loads(AD.STATE_FILE.read_text()), "ConnectionError: again", False)
+    check("a failed AD read alerts once, not on every retry",
+          sum(a_["title"] == "AD inventory cannot read Active Directory" for a_ in new_alerts(n)) == 1)
+
     # ---- (added) watchlists ---------------------------------------------------
     group("watchlists")
     import watchlists as W

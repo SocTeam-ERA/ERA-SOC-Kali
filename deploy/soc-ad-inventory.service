@@ -1,0 +1,10 @@
+[Unit]
+Description=Sentinel SOC Active Directory inventory (read-only LDAP: privileged groups, new accounts, Windows support, machines outside the domain)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+Environment=SOC_MAX_SNAPSHOT=5000
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/ad_inventory.py

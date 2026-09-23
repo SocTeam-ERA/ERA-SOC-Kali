@@ -1,0 +1,4 @@
+{
+  "_comment": "scripts/ad_inventory.py settings. not_in_domain_ignore: NetBIOS name patterns (fnmatch, e.g. \"TEST-*\") of Windows machines that are known and meant to stay outside the domain, so they do not raise 'Windows host not in the domain'.",
+  "not_in_domain_ignore": []
+}

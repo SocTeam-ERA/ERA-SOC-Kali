@@ -740,8 +740,14 @@ def inner() -> int:
           f1.get("os") == {"name": "Microsoft Windows 10 2004", "accuracy": 96}
           and f1.get("windows", {}).get("Product_Version") == "6.1.7601"
           and f1.get("smb_signing") == "not_required" and f1.get("netbios_name") == "OLDPC", str(f1))
+    fnd_held = host_facts.findings(ex, {}, today_)
+    check("the end-of-support finding is HELD by default (the NTLM build was wrong on real PCs); SMB signing is not",
+          [x_["title"].split(" on ")[0] for x_ in fnd_held] == ["SMB signing not required"], str([x_["title"] for x_ in fnd_held]))
+    check("the build is still kept in the extracted facts, to compare with winver",
+          ex["10.69.9.1"]["windows"]["Product_Version"] == "6.1.7601")
+    host_facts.TRUST_NTLM_BUILD = True
     fnd = host_facts.findings(ex, {}, today_)
-    check("that host yields exactly two findings: SMB signing (normal) and unsupported Windows (medium)",
+    check("with the switch on, that host yields exactly two findings: SMB signing (normal) and unsupported Windows (medium)",
           sorted((x_["title"].split(" on ")[0], x_["severity"]) for x_ in fnd)
           == [("SMB signing not required", "normal"), ("Unsupported Windows", "medium")], str([x_["title"] for x_ in fnd]))
 
@@ -758,6 +764,7 @@ def inner() -> int:
     N.run(facts_xml, {22}, tmp / "scanfacts_state.json")
     check("...and does not raise them again on the next scan (regression guard: findings alert once)",
           find(new_alerts(n), "SMB signing not required") is None and find(new_alerts(n), "Unsupported Windows") is None)
+    host_facts.TRUST_NTLM_BUILD = False          # back to the shipped default for everything after this
     sf = soc_core.load_assets()["3c:bb:cc:00:00:01"].get("scan_facts", {})
     check("what the scan learned is kept on that host's asset record",
           sf.get("windows", {}).get("Product_Version") == "6.1.7601" and sf.get("smb_signing") == "not_required"

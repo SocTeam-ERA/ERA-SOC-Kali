@@ -20,18 +20,28 @@ It does two things with it:
     support (no more security fixes).
 
 Honest limits, stated in the alerts too: nmap's OS guess is approximate and is only stored,
-never alerted on; a Windows build number from RDP identifies the servicing family (Windows 10 2004
-through 22H2 all report 19041), not the exact release, and says nothing about whether an
-extended-support contract or a long-term-servicing edition covers it; and a build shared by a client and a server edition
+never alerted on; the Windows build from RDP/NTLM is informational only and was wrong on machines
+checked by hand (see TRUST_NTLM_BUILD), so the end-of-support finding is held; it also says nothing about
+whether an extended-support contract or a long-term-servicing edition covers a machine; and a build shared by a client and a server edition
 (Windows 10 1607 and Server 2016, 1809 and Server 2019, ...) is skipped rather than guessed.
 """
 from __future__ import annotations
 
+import os
 import re
 import xml.etree.ElementTree as ET
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# HELD 2026-09-23: the "Unsupported Windows" finding is off until the build is verified. The build comes
+# from the NTLM challenge's version field, which MS-NLMP describes as informational only, and it proved
+# wrong on real machines: four PCs that the administrator checked are Windows 11 all answered 10.0.19041
+# (a Windows 10 build), while others answer 22621 / 26100. An end-of-support alert built on it would tell
+# IT to replace machines that are fine. The build is still stored per asset (scan_facts.windows) so it can
+# be compared with `winver` on a few machines; set SOC_TRUST_NTLM_BUILD=1 to raise the finding again once
+# that shows the field can be trusted (or after switching to a source that can, such as smb-os-discovery).
+TRUST_NTLM_BUILD = os.environ.get("SOC_TRUST_NTLM_BUILD") == "1"
 
 # Windows build -> (name, date support ended for the LATEST-ending edition). Using the last
 # edition to lose support (Enterprise/Education, or the Server SKU's extended support) means
@@ -147,7 +157,7 @@ def findings(facts_by_ip: Dict[str, Dict[str, Any]], hostnames: Dict[str, Option
                 details={"script": "smb2-security-mode", "smb_signing": "not_required"},
                 _key=f"{ip}:smb-signing"))
         win = f.get("windows") or {}
-        support = windows_support(win.get("Product_Version"), today)
+        support = windows_support(win.get("Product_Version"), today) if TRUST_NTLM_BUILD else None
         if support:
             out.append(dict(
                 type="vuln", severity=support["severity"],

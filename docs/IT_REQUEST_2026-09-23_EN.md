@@ -1,6 +1,6 @@
 # Request to IT: what the Sentinel SOC needs, and why
 
-**From:** Alberto Delcueto, Sentinel SOC (soc@era.ca)
+**From:** Arturo Delcueto, Sentinel SOC (soc@era.ca)
 **Date:** 2026-09-23
 **Status of the project:** Phase 1 (detection only). Nothing described here changes, blocks or attacks anything on the network.
 

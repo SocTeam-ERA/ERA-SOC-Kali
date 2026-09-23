@@ -43,7 +43,7 @@ No es de este proyecto de código, pero queda documentado: hoy se cayó varias v
 
 ## 2026-09-17 — sesión de limpieza de alertas + hallazgos nuevos
 
-**🔴 Prioridad máxima — sin escalar todavía a IT/red:** el test `5_vlan_segmentation_test.sh` (metodología validada: fuerza cada prueba por el gateway real de la VLAN origen, no por el atajo de este Kali multi-homed) confirmó **30 de 30 pares de VLANs alcanzables — cero segmentación real entre ninguna de las 6 VLANs**, incluyendo Guest/Employee WiFi llegando directo a Management y Wiping. Reporte ya armado y pasado a Alberto para IT (ver artifact "VLAN Segmentation Finding"). Ahora corre solo todas las noches a la 01:00 (`soc-vlan-segmentation.timer`) para detectar cuando se arregle.
+**🔴 Prioridad máxima — sin escalar todavía a IT/red:** el test `5_vlan_segmentation_test.sh` (metodología validada: fuerza cada prueba por el gateway real de la VLAN origen, no por el atajo de este Kali multi-homed) confirmó **30 de 30 pares de VLANs alcanzables — cero segmentación real entre ninguna de las 6 VLANs**, incluyendo Guest/Employee WiFi llegando directo a Management y Wiping. Reporte ya armado y pasado a Arturo para IT (ver artifact "VLAN Segmentation Finding"). Ahora corre solo todas las noches a la 01:00 (`soc-vlan-segmentation.timer`) para detectar cuando se arregle.
 - [ ] Escalar el reporte a IT/equipo de red y darle seguimiento.
 
 **Limpieza de ruido/falsos positivos en el feed de alertas (todo comiteado):**

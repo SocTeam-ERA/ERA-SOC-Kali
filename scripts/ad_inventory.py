@@ -30,7 +30,9 @@ and alerts (detector "ad_inventory") on:
     LAPS...), when one appears or gains accounts, and a note when one is fixed.
 
 `--privileged-only` (soc-ad-privileged.timer, every 15 minutes) re-reads only the privileged
-groups, so a new Domain Admin is noticed within minutes rather than the next morning.
+groups and the change-sensitive objects of scripts/ad_changes.py (GPOs and their links, trusts,
+AdminSDHolder and domain permissions / DCSync rights), so a new Domain Admin or an edited GPO is
+noticed within minutes rather than the next morning.
 
 The first run records the privileged members, computers and users as the baseline (one
 informational alert lists the privileged members to review) and only reports current risks.
@@ -67,6 +69,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import ad_changes  # noqa: E402
 import ad_risks  # noqa: E402
 import soc_core  # noqa: E402
 from soc_core import Alert, diff_state_lock, emit_alert  # noqa: E402
@@ -531,6 +534,7 @@ def run(dry_run: bool = False) -> int:
             conn, host = connect(cfg)
             try:
                 snap = read_ad(conn, cfg["AD_BASE_DN"], host, cfg.get("AD_LDAP_MODE", "ntlm").lower(), today)
+                change_kw, changes = ad_changes.check(conn, cfg["AD_BASE_DN"], state.get("changes"), _search, DETECTOR)
             finally:
                 conn.unbind()
         except Exception as e:  # noqa: BLE001 -- any failure is reported the same way
@@ -542,6 +546,8 @@ def run(dry_run: bool = False) -> int:
 
         ignore = _load_json(CONFIG_FILE, {}).get("not_in_domain_ignore", [])
         alerts, new_state = evaluate(snap, state, network_windows_hosts(), today, ignore)
+        alerts += change_kw
+        new_state["changes"] = changes
 
         if dry_run:
             print(f"[dry-run] {host} ({snap['mode']}): {len(snap['computers'])} computers, {len(snap['users'])} users")
@@ -576,13 +582,14 @@ def run_privileged(dry_run: bool = False) -> int:
             conn, host = connect(cfg)
             try:
                 priv = read_privileged(conn, cfg["AD_BASE_DN"])
+                change_kw, changes = ad_changes.check(conn, cfg["AD_BASE_DN"], state.get("changes"), _search, DETECTOR)
             finally:
                 conn.unbind()
         except Exception as e:  # noqa: BLE001
             return _failure(state, f"{type(e).__name__}: {e}", dry_run)
         if not priv:
             return _failure(state, "no privileged group was readable", dry_run)
-        alerts = privileged_changes(state["privileged"], priv)
+        alerts = privileged_changes(state["privileged"], priv) + change_kw
         if dry_run:
             for a in alerts:
                 print(f"  {a['severity']:8} {a['title']}")
@@ -593,7 +600,8 @@ def run_privileged(dry_run: bool = False) -> int:
                              details={"previous_error": state["last_error"]}))
         for kw in alerts:
             emit_alert(Alert(**kw), echo=False)
-        _save_json(STATE_FILE, {**state, "privileged": {**state["privileged"], **priv}, "last_error": None})
+        _save_json(STATE_FILE, {**state, "privileged": {**state["privileged"], **priv}, "changes": changes,
+                                "last_error": None})
         if alerts:
             print(f"[*] ad_inventory --privileged-only: {len(alerts)} change(s)")
     return 0
@@ -603,6 +611,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dry-run", action="store_true", help="print what would be alerted; save nothing")
     ap.add_argument("--privileged-only", action="store_true",
-                    help="only compare the privileged groups with the last reading (the 15-minute check)")
+                    help="the 15-minute check: privileged groups, GPOs, trusts and domain permissions only")
     args = ap.parse_args()
     raise SystemExit(run_privileged(args.dry_run) if args.privileged_only else run(args.dry_run))

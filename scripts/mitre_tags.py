@@ -47,6 +47,9 @@ TECHNIQUES: Dict[str, tuple] = {
     "T1557":     ("Adversary-in-the-Middle", ["Credential Access", "Collection"]),
     "T1550.002": ("Pass the Hash", ["Defense Evasion", "Lateral Movement"]),
     "T1558":     ("Steal or Forge Kerberos Tickets", ["Credential Access"]),
+    "T1003.006": ("DCSync", ["Credential Access"]),
+    "T1484.001": ("Group Policy Modification", ["Defense Evasion", "Privilege Escalation"]),
+    "T1484.002": ("Domain or Tenant Policy Modification: Trust Modification", ["Defense Evasion", "Privilege Escalation"]),
     "T1558.001": ("Golden Ticket", ["Credential Access"]),
     "T1558.003": ("Kerberoasting", ["Credential Access"]),
     "T1558.004": ("AS-REP Roasting", ["Credential Access"]),
@@ -95,6 +98,11 @@ _TITLE_RULES: List[tuple] = [
     ("ad_inventory",   r"password policy (allows|has no minimum)|never lock out",[("T1110", "exposure")]),
     ("ad_inventory",   r"^LAPS not deployed",                       [("T1550.002", "exposure")]),
     ("ad_inventory",   r"^Windows host not in the domain",          [("T1200", "exposure")]),
+    ("ad_inventory",   r"^(New GPO created|GPO modified|GPO linked|GPO link enabled)", [("T1484.001", "observed")]),
+    ("ad_inventory",   r"^(New domain trust|Domain trust changed)", [("T1484.002", "observed")]),
+    ("ad_inventory",   r"^DCSync rights granted",                   [("T1003.006", "observed")]),
+    ("ad_inventory",   r"^(AdminSDHolder permissions changed|Permissions on the domain object changed)",
+     [("T1098", "observed")]),
 ]
 _TITLE_RULES = [(d, re.compile(rx), t) for d, rx, t in _TITLE_RULES]
 

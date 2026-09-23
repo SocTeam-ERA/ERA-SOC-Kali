@@ -978,6 +978,52 @@ def inner() -> int:
     check("a detector watching this appliance does not map its local users to AD",
           "identity" not in (find(got, "selftest local user") or {}).get("details", {}))
 
+    # changes to GPOs, links, trusts and domain permissions (ad_changes.py; pure comparison, no LDAP)
+    import ad_changes as ACH
+    check("gPLink is parsed, and a disabled link is marked",
+          ACH.parse_gplink("[LDAP://cn={aaa-1},cn=policies,cn=system,DC=x;0][LDAP://cn={bbb-2},cn=policies,cn=system,DC=x;1]")
+          == ["{AAA-1}", "!{BBB-2}"])
+    dom = "S-1-5-21-1-2-3"
+    aces0 = [f"ACCESS_ALLOWED_OBJECT|{dom}-516|0x100|{ACH.GET_CHANGES_ALL}", f"ACCESS_ALLOWED|{dom}-512|0xf01ff|",
+             "ACCESS_ALLOWED|S-1-5-11|0x20094|"]
+    check("DCSync holders: the extended right or full control counts, plain read does not",
+          ACH.dcsync_holders(aces0) == [f"{dom}-512", f"{dom}-516"])
+    base0 = {"gpos": {"{G1}": {"name": "Accounting Local Admin", "version": 5, "flags": 0},
+                      "{G2}": {"name": "Default Domain Controllers Policy", "version": 2, "flags": 0}},
+             "links": {"OU=Accounting,DC=x": ["{G1}"]}, "trusts": {},
+             "acl": {"adminsdholder": ["ACCESS_ALLOWED|S-1-5-18|0xf01ff|"], "domain": aces0},
+             "dcsync": ACH.dcsync_holders(aces0)}
+    first = ACH.change_alerts(None, base0, {})
+    check("first reading: one baseline alert, nothing else",
+          [x_["title"] for x_ in first] == ["AD change monitoring started (baseline)"])
+    check("...and an identical second reading raises nothing", ACH.change_alerts(base0, json.loads(json.dumps(base0)), {}) == [])
+    now1 = json.loads(json.dumps(base0))
+    now1["gpos"]["{G1}"]["version"] = 6
+    now1["gpos"]["{G2}"]["version"] = 3
+    now1["gpos"]["{G3}"] = {"name": "Evil", "version": 1, "flags": 0}
+    now1["links"]["DC=x"] = ["{G3}"]
+    now1["links"]["OU=Accounting,DC=x"] = ["!{G1}"]
+    now1["trusts"]["partner.example"] = {"direction": 3, "type": 2, "attributes": 8}
+    now1["acl"]["adminsdholder"].append("ACCESS_ALLOWED|S-1-5-21-1-2-3-1105|0xf01ff|")
+    now1["acl"]["domain"].append(f"ACCESS_ALLOWED_OBJECT|{dom}-1105|0x100|{ACH.GET_CHANGES_ALL}")
+    now1["dcsync"] = ACH.dcsync_holders(now1["acl"]["domain"])
+    ch = {x_["title"]: x_ for x_ in ACH.change_alerts(base0, now1, {f"{dom}-1105": "mallory"})}
+    check("a GPO edit is medium, an edit of the DC policy critical, a new GPO and its link reported",
+          ch.get("GPO modified: Accounting Local Admin", {}).get("severity") == "medium"
+          and ch.get("GPO modified: Default Domain Controllers Policy", {}).get("severity") == "critical"
+          and "New GPO created: Evil" in ch and "GPO linked: Evil on DC=x" in ch, str(list(ch)))
+    check("a link being disabled is reported as such, not as unlinked + linked",
+          "GPO link disabled: Accounting Local Admin on OU=Accounting,DC=x" in ch
+          and not any(t_.startswith("GPO unlinked") for t_ in ch), str(list(ch)))
+    check("a new trust, an AdminSDHolder change and new DCSync rights are critical, named by account",
+          ch.get("New domain trust: partner.example", {}).get("severity") == "critical"
+          and ch.get("AdminSDHolder permissions changed", {}).get("severity") == "critical"
+          and ch.get("DCSync rights granted: mallory", {}).get("severity") == "critical", str(list(ch)))
+    check("GPO and DCSync alerts carry MITRE T1484.001 and T1003.006",
+          [t_["technique"] for t_ in mitre_tags.tag({"detector": "ad_inventory", "title": "GPO modified: X"})] == ["T1484.001"]
+          and [t_["technique"] for t_ in mitre_tags.tag({"detector": "ad_inventory",
+                                                          "title": "DCSync rights granted: mallory"})] == ["T1003.006"])
+
     # ---- (added) watchlists ---------------------------------------------------
     group("watchlists")
     import watchlists as W

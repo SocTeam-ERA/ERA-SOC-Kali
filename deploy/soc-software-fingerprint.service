@@ -1,0 +1,15 @@
+[Unit]
+Description=Sentinel SOC software fingerprint -> asset inventory enrichment
+After=soc-zeek-boot.service
+Requires=soc-zeek-boot.service
+
+[Service]
+Type=simple
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/kali
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/kali/software_to_assets.py --follow
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -35,6 +35,11 @@ raises an alert when something was installed or edited without reaching `deploy/
   stay on the machine and in the team's password vault.
 - `data/` and `kali/results/` are runtime data. `kali/backup_data.sh` backs them up, not git.
 
+## Proposals for future work
+
+Ideas that are not being built yet go in `improvements/` as `NNN-short-name.md`, one per proposal, and
+are listed in `improvements/README.md`. Keep them out of `docs/`, which describes what exists.
+
 ## Before committing
 
     sg soc -c 'python3 scripts/soc_selftest.py'    # must pass

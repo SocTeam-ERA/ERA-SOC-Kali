@@ -13,6 +13,7 @@ Kali/nmap network-scanning suite.
 | Open the dashboard | `dashboard/sentinel_soc.html` |
 | Run the detectors | `scripts/` |
 | Scan the network from Kali | `kali/` |
+| Future improvements proposed for review | [`improvements/`](improvements/README.md) |
 
 > **Dashboard data:** served over HTTP it reads the real `data/alerts.json` (badge: *FEED · alerts.json*); double-clicked it shows in-browser demo data (*FEED LIVE · demo*). See the quickstart.
 

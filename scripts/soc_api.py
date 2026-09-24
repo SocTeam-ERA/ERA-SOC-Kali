@@ -108,7 +108,10 @@ def _filter_alerts(alerts, qs):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "SentinelSOC-API/1.0"
-    timeout = 60   # per socket operation: a client that connects and goes silent frees its thread
+    # per socket operation (a slow search or pcap is not affected: the socket is idle while the server works): a
+    # client that connects and goes silent frees its thread. Was 60 s, which made nmap's version probe of the
+    # HTTPS port (the Kali scans itself) wait about three minutes.
+    timeout = 15
     def _send(self, code, payload):
         body = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(code)

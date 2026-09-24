@@ -1,6 +1,9 @@
 # 004: Resolve alerts with a note in the platform dashboard, synced back to the Kali
 
-- **Status:** Proposed
+- **Status:** Accepted, in progress. Kali side done 2026-09-24 (7725c10): `GET /api/alerts?status_since=` lists
+  status changes with `status_actor` and `status_note`, so the backend can mirror them (docs/API_SPEC_EN.md §5).
+  Waiting on ERA-SOC: the backend PATCH with a note, posting it to the Kali, the poller reading status_since,
+  and the drawer UI; plus a write key for the backend.
 - **Proposed:** 2026-09-23 by Arturo
 - **Effort:** medium. The work is mostly in the ERA-SOC repository (backend and frontend).
 

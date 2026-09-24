@@ -14,7 +14,8 @@ Sources, all local files (no LDAP call per alert):
                                (scan_facts, see host_facts.py), to go from an IP to a computer.
 
 Resolution, from the alert's details.entities (alert_context.py):
-  * ip   -> NetBIOS name from the scan -> AD computer; if the scan names a Windows machine AD
+  * ip   -> NetBIOS name from the scan (or, failing that, the DHCP host name or the domain's DNS record,
+            see ip_names.py; a DNS-only match carries "via": "dns") -> AD computer; if the scan names a Windows machine AD
             does not know, it is reported as {"name", "in_domain": false};
   * host -> AD computer by name, DNS name or first label;
   * user -> AD user by sAMAccountName (or DOMAIN\\user, user@domain) -- except for detectors
@@ -50,7 +51,8 @@ def _sig(*paths) -> tuple:
 
 def _index() -> Optional[Dict[str, Any]]:
     inv_path, assets_path = soc_core.DATA_DIR / "ad_inventory.json", soc_core.DATA_DIR / "assets.json"
-    sig = _sig(inv_path, assets_path)
+    names_path = soc_core.DATA_DIR / "ip_names.json"           # ip_names.py: DHCP and DNS matches
+    sig = _sig(inv_path, assets_path, names_path)
     if sig[0] is None:
         return None
     if _cache["sig"] == sig:
@@ -75,8 +77,19 @@ def _index() -> Optional[Dict[str, Any]]:
         name = (sf.get("windows") or {}).get("NetBIOS_Computer_Name") or sf.get("netbios_name")
         if name and rec.get("ip"):
             ip_name[rec["ip"]] = str(name).upper()
+    # More addresses than the scan could name: DHCP host names and the domain's DNS (ip_names.py). The
+    # scan's own name always wins; a DNS-only match is marked so an inferred identity is never passed
+    # off as an observed one.
+    ip_via: Dict[str, str] = {}
+    try:
+        for ip, m in (json.loads(names_path.read_text()).get("ips") or {}).items():
+            if ip not in ip_name and m.get("name"):
+                ip_name[ip] = str(m["name"]).upper()
+                ip_via[ip] = m.get("via") or "dns"
+    except (OSError, ValueError, AttributeError):
+        pass
     idx = {"computers": comps, "by_name": by_name, "users": inv.get("users", {}), "priv": priv,
-           "ip_name": ip_name, "generated": inv.get("generated")}
+           "ip_name": ip_name, "ip_via": ip_via, "generated": inv.get("generated")}
     _cache.update(sig=sig, idx=idx)
     return idx
 
@@ -119,8 +132,11 @@ def identity(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
                 continue
             key = find_computer(idx, name)
             if key:
-                computers.setdefault(key, {**_computer(idx, key), "ip": value})
-            else:
+                extra = {"via": idx["ip_via"][value]} if idx["ip_via"].get(value) == "dns" else {}
+                computers.setdefault(key, {**_computer(idx, key), "ip": value, **extra})
+            elif value not in idx["ip_via"]:
+                # only a name the scan itself read from a Windows machine can say "not in the domain"; a DNS or
+                # DHCP name with no AD match may be a phone, a printer, or a computer since removed from AD
                 computers.setdefault(name, {"name": name, "in_domain": False, "ip": value})
         elif kind == "host" and not local:
             key = find_computer(idx, value)

@@ -131,6 +131,14 @@ def run() -> int:
     except Exception as e:
         print(f"[watchdog] code freshness check failed: {e}", file=sys.stderr)
 
+    # Keep the IP -> Active Directory computer map fresh (rebuilds at most hourly): it is what lets an
+    # alert about an address say which machine and OU it is.
+    try:
+        import ip_names
+        ip_names.refresh()
+    except Exception as e:
+        print(f"[watchdog] ip_names refresh failed: {e}", file=sys.stderr)
+
     # Close informational change alerts nobody reviewed (acts at most every 6 hours).
     try:
         import alert_aging

@@ -1595,6 +1595,98 @@ def inner() -> int:
         GE._readers.update(saved_readers)
         GE._next_try.update(city=0.0, country=0.0)
 
+    # ---- (added) identity coverage: IP -> AD computer through DHCP names and the domain's DNS ---------------
+    group("identity coverage")
+    import ip_names as IPN
+    import ad_identity as AID
+    from datetime import datetime as _d2, timedelta as _t2, timezone as _z2
+    n_now = _d2.now(_z2.utc)
+    ago = lambda days: (n_now - _t2(days=days)).isoformat()
+    inv_ = {"computers": {
+        "PC-ONE": {"name": "PC-ONE", "dns": "pc-one.era.local", "enabled": True, "last_logon": ago(3), "ou": "Calgary/A"},
+        "PC-TWO": {"name": "PC-TWO", "dns": "pc-two.era.local", "enabled": True, "last_logon": ago(3)},
+        "PC-DHCP": {"name": "PC-DHCP", "dns": "pc-dhcp.era.local", "enabled": True, "last_logon": ago(3)},
+        "PC-OLD": {"name": "PC-OLD", "dns": "pc-old.era.local", "enabled": True, "last_logon": ago(200)},
+        "PC-OFF": {"name": "PC-OFF", "dns": "pc-off.era.local", "enabled": False, "last_logon": ago(3)},
+        "SHARED-A": {"name": "SHARED-A", "dns": "shared-a.era.local", "enabled": True, "last_logon": ago(3)},
+        "SHARED-B": {"name": "SHARED-B", "dns": "shared-b.era.local", "enabled": True, "last_logon": ago(3)},
+        "CONFLICT": {"name": "CONFLICT", "dns": "conflict.era.local", "enabled": True, "last_logon": ago(3)},
+        "MULTI": {"name": "MULTI", "dns": "multi.era.local", "enabled": True, "last_logon": ago(3)},
+        "WEIRD": {"name": "WEIRD", "dns": "weird.era.local", "enabled": True, "last_logon": ago(3)}}}
+    asset = lambda ip, **kw: {"ip": ip, "last_seen": ago(0.1), **kw}
+    assets_ = {"a1": asset("10.9.0.1"),
+               "a2": asset("10.9.0.3", dhcp_hostname="pc-dhcp"),
+               "a3": asset("10.9.0.9", scan_facts={"windows": {"NetBIOS_Computer_Name": "HP-PRINTER"}}),
+               "a4": asset("10.9.0.20", last_seen=ago(0.1)),
+               "a5": asset("10.9.0.21", last_seen=ago(30))}
+    dns_ = {"pc-one.era.local": ["10.9.0.1"], "pc-two.era.local": ["10.9.0.2"], "pc-dhcp.era.local": ["10.9.0.30"],
+            "pc-old.era.local": ["10.9.0.4"], "pc-off.era.local": ["10.9.0.5"],
+            "shared-a.era.local": ["10.9.0.6"], "shared-b.era.local": ["10.9.0.6"],
+            "conflict.era.local": ["10.9.0.9"], "multi.era.local": ["10.9.0.20", "10.9.0.21"],
+            "weird.era.local": ["0.0.0.0", "169.254.1.1", "127.0.0.1"]}
+    looked = []
+    def fake_lookup(fq):
+        looked.append(fq)
+        if fq == "pc-two.era.local":
+            raise OSError("boom")
+        return dns_.get(fq, [])
+    r_ = IPN.build(inv_, assets_, fake_lookup, n_now)
+    m_ = r_["ips"]
+    check("an AD computer whose DNS name resolves to one address is mapped, marked via 'dns'",
+          m_.get("10.9.0.1") == {"name": "PC-ONE", "via": "dns"}, str(m_.get("10.9.0.1")))
+    check("a host name the DHCP server saw is mapped too, marked via 'dhcp', and wins over a DNS record for it",
+          m_.get("10.9.0.3") == {"name": "PC-DHCP", "via": "dhcp"} and "10.9.0.30" in m_ and m_["10.9.0.30"]["via"] == "dns")
+    check("a computer that is disabled or has not signed in for 90 days is not even looked up",
+          "pc-old.era.local" not in looked and "pc-off.era.local" not in looked and "10.9.0.4" not in m_ and "10.9.0.5" not in m_)
+    check("an address that two AD computers resolve to is not attributed to either (a stale record must not name the wrong PC)",
+          "10.9.0.6" not in m_ and r_["stats"]["skipped"].get("address shared by several AD computers") == 2)
+    check("an address the scan or DHCP named as something else is not overridden by DNS",
+          "10.9.0.9" not in m_ and r_["stats"]["skipped"].get("the scan/DHCP named a different machine there") == 1)
+    check("a multi-homed machine keeps only the address seen in the last 2 days",
+          m_.get("10.9.0.20", {}).get("name") == "MULTI" and "10.9.0.21" not in m_)
+    check("a lookup that fails, loopback, link-local and unspecified answers are ignored without breaking the pass",
+          "10.9.0.2" not in m_ and not any(k.startswith(("0.", "127.", "169.254.")) for k in m_))
+    check("the stats add up", r_["stats"]["mapped"] == len(m_) == r_["stats"]["via_dhcp"] + r_["stats"]["via_dns"])
+
+    # the file, the hourly refresh, and how ad_identity uses it
+    saved_files = {n: (tmp / n).read_bytes() for n in ("ad_inventory.json", "ip_names.json") if (tmp / n).exists()}
+    try:
+        (tmp / "ip_names.json").unlink(missing_ok=True)
+        (tmp / "ad_inventory.json").unlink(missing_ok=True)
+        check("with no AD inventory yet, refresh does nothing and writes nothing",
+              IPN.refresh(force=True) is None and not (tmp / "ip_names.json").exists())
+        (tmp / "ad_inventory.json").write_text(json.dumps({**inv_, "generated": ago(0.01), "users": {}, "privileged": {}}))
+        real_lookup = IPN._dns_lookup
+        IPN._dns_lookup = lambda fq: dns_.get(fq, [])
+        try:
+            IPN.build.__defaults__ = (IPN._dns_lookup, None)          # refresh() uses build()'s default resolver
+            first = IPN.refresh(force=True)
+        finally:
+            IPN._dns_lookup = real_lookup
+            IPN.build.__defaults__ = (real_lookup, None)
+        check("refresh writes data/ip_names.json, and does not rebuild again within the hour",
+              first and (tmp / "ip_names.json").exists() and IPN.refresh() is None
+              and json.loads((tmp / "ip_names.json").read_text())["ips"].get("10.9.0.1", {}).get("name") == "PC-ONE")
+        (tmp / "ip_names.json").write_text(json.dumps(r_))          # the map built above from the synthetic assets
+        rec = lambda ip: {"detector": "kali_scan", "details": {"entities": [{"type": "ip", "value": ip}]}}
+        got = AID.identity(rec("10.9.0.1"))
+        check("ad_identity names a DNS-matched address, marks it via 'dns', and gives the OU",
+              got and got["computers"][0]["name"] == "PC-ONE" and got["computers"][0].get("via") == "dns"
+              and got["computers"][0]["ou"] == "Calgary/A", str(got))
+        got = AID.identity(rec("10.9.0.3"))
+        check("a DHCP-matched address is named without a 'via' mark (it was observed, not inferred)",
+              got and got["computers"][0]["name"] == "PC-DHCP" and "via" not in got["computers"][0], str(got))
+        check("an address nobody maps still carries no identity", AID.identity(rec("10.9.0.77")) is None)
+        # a stale map naming a computer that has since left AD must not read as 'a Windows machine outside the domain'
+        (tmp / "ip_names.json").write_text(json.dumps({"ips": {"10.9.0.88": {"name": "GONE-PC", "via": "dns"}}}))
+        check("a DNS/DHCP-only name with no AD match adds no computer (only the scan's own Windows names can say "
+              "'not in the domain')", AID.identity(rec("10.9.0.88")) is None)
+    finally:
+        for n in ("ad_inventory.json", "ip_names.json"):
+            (tmp / n).unlink(missing_ok=True)
+            if n in saved_files:
+                (tmp / n).write_bytes(saved_files[n])
+
     # ---- (added) ATT&CK coverage matrix and the weekly executive report ------------------------------
     group("mitre matrix")
     import mitre_matrix as MM

@@ -1257,6 +1257,68 @@ def inner() -> int:
         except subprocess.TimeoutExpired:
             l2.kill()
 
+    # ---- (added) the API over HTTPS (soc-api-tls.service): a CA-signed certificate like make_api_cert.sh's --------
+    group("api tls")
+    import socket
+    import ssl
+    import urllib.error    # (inner() imports urllib locally further down, so the name is local here too)
+    import urllib.request
+    tdir = tmp / "tls"
+    tdir.mkdir()
+    ossl = lambda *a: subprocess.run(["openssl", *a], cwd=tdir, capture_output=True, text=True, timeout=30)  # noqa: E731
+    ossl("req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-days", "2", "-keyout", "ca.key",
+         "-out", "ca.pem", "-subj", "/CN=selftest CA", "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+         "-addext", "keyUsage=critical,keyCertSign,cRLSign", "-addext", "subjectKeyIdentifier=hash")
+    ossl("req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes", "-keyout", "api.key", "-out", "api.csr",
+         "-subj", "/CN=localhost")
+    (tdir / "ext").write_text("basicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature\n"
+                              "extendedKeyUsage=serverAuth\nsubjectKeyIdentifier=hash\nauthorityKeyIdentifier=keyid\n"
+                              "subjectAltName=IP:127.0.0.1\n")
+    ossl("x509", "-req", "-in", "api.csr", "-CA", "ca.pem", "-CAkey", "ca.key", "-CAcreateserial", "-days", "2",
+         "-sha256", "-out", "api.pem", "-extfile", "ext")
+    with socket.socket() as sk:
+        sk.bind(("127.0.0.1", 0))
+        tport = sk.getsockname()[1]
+    tproc = subprocess.Popen([sys.executable, str(SCRIPTS / "soc_api.py")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             env=dict(os.environ, SOC_API_HOST="127.0.0.1", SOC_API_PORT=str(tport),
+                                      SOC_API_TLS_CERT=str(tdir / "api.pem"), SOC_API_TLS_KEY=str(tdir / "api.key")))
+    try:
+        trusted = ssl.create_default_context(cafile=str(tdir / "ca.pem"))   # strict X.509 checks, like the backend
+        ok_tls = None
+        for _ in range(40):
+            try:
+                with urllib.request.urlopen(f"https://127.0.0.1:{tport}/api/health", context=trusted, timeout=2) as r:
+                    ok_tls = r.status
+                break
+            except OSError:
+                time.sleep(0.25)
+        check("the API serves HTTPS with a certificate the backend can verify strictly (CA file, like KALI_API_CA_CERT)",
+              ok_tls == 200, str(ok_tls))
+        try:
+            urllib.request.urlopen(f"https://127.0.0.1:{tport}/api/health", context=ssl.create_default_context(), timeout=3)
+            refused = False
+        except OSError:
+            refused = True
+        check("...and a client that does not trust the CA is refused", refused)
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{tport}/api/health", timeout=3)
+            plain = True
+        except OSError:
+            plain = False
+        check("...and plain HTTP on the TLS port gets nothing", not plain)
+        with socket.create_connection(("127.0.0.1", tport), timeout=3):
+            stall_start = time.monotonic()           # a client that connects and never handshakes...
+            try:
+                with urllib.request.urlopen(f"https://127.0.0.1:{tport}/api/health", context=trusted, timeout=5) as r:
+                    served = r.status == 200
+            except OSError:
+                served = False
+            check("...and one stalled client does not block the others (handshake runs per connection)",
+                  served and time.monotonic() - stall_start < 5)
+    finally:
+        tproc.terminate()
+        tproc.wait(timeout=10)
+
     # ---- (added) API server with read and write keys ------------------------------
     group("api")
     import socket

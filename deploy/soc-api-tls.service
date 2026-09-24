@@ -1,0 +1,22 @@
+[Unit]
+Description=Sentinel SOC results API over HTTPS (port 8443; same API and data as soc-api on 8080)
+After=network-online.target
+Wants=network-online.target
+# Needs the certificate from deploy/make_api_cert.sh; without it the unit does not start.
+ConditionPathExists=/etc/sentinel-soc/tls/api.key
+
+[Service]
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+EnvironmentFile=/etc/sentinel-soc/soc-api.env
+Environment=SOC_API_HOST=0.0.0.0
+Environment=SOC_API_PORT=8443
+Environment=SOC_API_TLS_CERT=/etc/sentinel-soc/tls/api.pem
+Environment=SOC_API_TLS_KEY=/etc/sentinel-soc/tls/api.key
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/soc_api.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

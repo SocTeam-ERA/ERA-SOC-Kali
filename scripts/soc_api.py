@@ -21,7 +21,7 @@ not a single shared token: every key has a "role" of "read" (GET only) or
 key's user, not a client-supplied field.
 """
 from __future__ import annotations
-import json, os, secrets, socket, threading
+import json, os, secrets, socket, ssl, threading
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -41,6 +41,9 @@ import weekly_report
 HOST = os.environ.get("SOC_API_HOST", "0.0.0.0")
 PORT = int(os.environ.get("SOC_API_PORT", "8080"))
 CORS = os.environ.get("SOC_API_CORS", "").strip()
+# HTTPS: set both to serve TLS on this instance (soc-api-tls.service does, on 8443). Unset = plain HTTP.
+TLS_CERT = os.environ.get("SOC_API_TLS_CERT", "").strip()
+TLS_KEY = os.environ.get("SOC_API_TLS_KEY", "").strip()
 # Both POST bodies are tiny ({"status": "...", "note": "..."} / {"owner":
 # ..., "notes": ..., "authorized": ...}) -- this is generous headroom, not
 # a real limit on legitimate use. Without it, Content-Length is trusted
@@ -104,6 +107,7 @@ def _filter_alerts(alerts, qs):
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "SentinelSOC-API/1.0"
+    timeout = 60   # per socket operation: a client that connects and goes silent frees its thread
     def _send(self, code, payload):
         body = json.dumps(payload, indent=2).encode("utf-8")
         self.send_response(code)
@@ -478,9 +482,26 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, updated)
         return self._send(404, {"error": "not found", "path": path})
 
+def tls_context(cert: str, key: str) -> ssl.SSLContext:
+    """Server-side TLS: TLS 1.2 minimum, the certificate chain and its key (see deploy/make_api_cert.sh)."""
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+    ctx.load_cert_chain(cert, key)
+    return ctx
+
+
 def main():
     srv = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"[*] Sentinel SOC API listening on http://{HOST}:{PORT}")
+    scheme = "http"
+    if TLS_CERT or TLS_KEY:
+        if not (TLS_CERT and TLS_KEY):
+            raise SystemExit("[!] set both SOC_API_TLS_CERT and SOC_API_TLS_KEY, or neither")
+        # The handshake is deferred to the request's own thread (do_handshake_on_connect=False, it runs on the
+        # first read): done in accept(), one client that connects and stalls would block every other client.
+        srv.socket = tls_context(TLS_CERT, TLS_KEY).wrap_socket(srv.socket, server_side=True,
+                                                                do_handshake_on_connect=False)
+        scheme = "https"
+    print(f"[*] Sentinel SOC API listening on {scheme}://{HOST}:{PORT}")
     print(f"[*] Serving alerts from: {soc_core.ALERTS_SNAPSHOT}")
     n_write = sum(1 for k in API_KEYS.values() if k["role"] == "write")
     print(f"[*] Auth: Authorization: Bearer <token>   "

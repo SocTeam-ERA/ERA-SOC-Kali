@@ -15,7 +15,7 @@ the Kali code, and when the API changes, this file changes in the same commit.
 
 | | |
 |---|---|
-| Base URL | `http://<kali>:8080`, today `http://10.69.0.40:8080` (moving to HTTPS, see §9) |
+| Base URL | `https://10.69.0.40:8443` (HTTPS, `soc-api-tls.service`) or `http://10.69.0.40:8080` (plain, to be closed, see §9). Same API and data on both |
 | Auth | `Authorization: Bearer <token>` on every `/api/*` path except `/api/health` |
 | Format | JSON (`application/json`), UTF-8. A pcap download is `application/vnd.tcpdump.pcap` |
 | Times | ISO-8601 in UTC with offset (`2026-09-24T15:47:38.123+00:00`). Query parameters also accept epoch milliseconds |
@@ -277,11 +277,22 @@ The detectors from `service_watchdog` onward watch the Kali itself.
 
 ---
 
-## 9. Planned: HTTPS and access only from the backend
+## 9. HTTPS, and access only from the backend
 
-- **Today:** plain HTTP on `0.0.0.0:8080`, reachable from all six VLANs. The backend polls from
-  `10.69.0.80`.
-- **Planned:** HTTPS with the Kali's own certificate, and the firewall allowing only `10.69.0.80`
-  (plus local access on the Kali). The backend already supports this (`KALI_API_URL=https://…`,
-  `KALI_API_CA_CERT`). The switch will be coordinated so the alert flow never stops: both schemes will
-  run in parallel until the backend has moved over.
+**In place (2026-09-24):**
+- `https://10.69.0.40:8443` serves the same API over TLS 1.2+.
+- The certificate is signed by a small private CA made on the Kali (`deploy/make_api_cert.sh`). It is
+  valid for `kali2`, `kali2.era.local`, `10.69.0.40` and `127.0.0.1`.
+- **The backend trusts the CA file**, not the certificate itself: `/etc/sentinel-soc/tls/ca.pem`. That
+  file is public and safe to copy. Renewing the API certificate (`make_api_cert.sh --renew`, every 825 days)
+  then needs no change on the backend.
+- The keys never leave the Kali.
+
+**Switch-over, without stopping the alert flow:**
+1. The Kali serves both: 8080 (HTTP) and 8443 (HTTPS). *(done)*
+2. The backend puts `ca.pem` in its `kali-ca/` directory and sets `KALI_API_CA_CERT=/kali-ca/ca.pem` and
+   `KALI_API_URL=https://10.69.0.40:8443` in Dokploy, then redeploys.
+3. Check that the backend polls 8443 (the Kali journal: `journalctl -u soc-api-tls`) and that new alerts
+   still reach the dashboard.
+4. Only then: close 8080, and let the firewall accept 8443 from `10.69.0.80` (the backend) and the Kali
+   itself only.

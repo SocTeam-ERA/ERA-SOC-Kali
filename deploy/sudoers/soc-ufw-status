@@ -1,0 +1,3 @@
+# Read-only: lets the SOC user list the firewall rules so the daily self-test can compare them with
+# deploy/firewall/ (scripts/firewall_drift.py). Exact arguments only; ufw cannot change anything this way.
+adelcueto ALL=(root) NOPASSWD: /usr/sbin/ufw status numbered, /usr/sbin/ufw status verbose

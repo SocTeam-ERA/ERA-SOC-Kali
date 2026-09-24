@@ -3,9 +3,9 @@
 
 Mostly read-only: every GET endpoint just reads the current snapshot.
 The write endpoints are deliberately narrow:
-  - POST /api/alerts/<id>/status can only change an alert's triage status (GET /api/alerts?status_since=<iso>
-    lists the alerts whose status changed since then, oldest change first, with status_actor/status_note)
-    (open / acknowledged / resolved), nothing else about the alert.
+  - POST /api/alerts/<id>/status can only change an alert's triage status
+    (open / acknowledged / resolved), nothing else about the alert. GET /api/alerts?status_since=<iso>
+    lists the alerts whose status changed since then, oldest change first, with status_actor/status_note.
   - POST /api/incidents/<id> can only change an incident's status,
     classification, owner and comments (see correlate.update_incident).
   - POST /api/assets/<mac>/notes can only set owner/notes/authorized on an

@@ -1,0 +1,287 @@
+# Sentinel SOC Kali API: specification
+
+The Kali appliance's own REST API (`scripts/soc_api.py`, service `soc-api`). The platform backend
+(SocTeam-ERA/ERA-SOC, `SOC-Back/common/kali_poll.py`) pulls alerts from it. The endpoints in this
+document are what a backend proxy (`/api/kali/*`) can expose to the dashboard.
+
+This file is the source of truth for the contract. ERA-SOC should link here rather than keep copies of
+the Kali code, and when the API changes, this file changes in the same commit.
+
+*Updated 2026-09-24.*
+
+---
+
+## 1. Connection
+
+| | |
+|---|---|
+| Base URL | `http://<kali>:8080`, today `http://10.69.0.40:8080` (moving to HTTPS, see §9) |
+| Auth | `Authorization: Bearer <token>` on every `/api/*` path except `/api/health` |
+| Format | JSON (`application/json`), UTF-8. A pcap download is `application/vnd.tcpdump.pcap` |
+| Times | ISO-8601 in UTC with offset (`2026-09-24T15:47:38.123+00:00`). Query parameters also accept epoch milliseconds |
+| CORS | Off unless `SOC_API_CORS` is set. The browser should not call this API directly (§8) |
+
+### Keys and roles
+
+Every key belongs to a user and has a role. Keys are managed with `scripts/manage_api_keys.py` on the Kali.
+
+| Role | Can do |
+|---|---|
+| `read` | Every `GET` |
+| `write` | Every `GET`, plus the `POST` and `DELETE` endpoints in §4 |
+
+Every write is recorded under the **key's user**. The API never accepts a user name sent by the client,
+so a backend acting for an analyst should put the analyst's name in the note or comment,
+e.g. `"[jdoe] false positive: IT maintenance"`.
+
+### Errors
+
+Every error is JSON: `{"error": "<message>", "hint": "<optional>"}`.
+
+| Code | Meaning |
+|---|---|
+| 400 | Invalid parameter or body |
+| 401 | Missing or unknown key |
+| 403 | Read-only key on a write endpoint |
+| 404 | Unknown path or object |
+| 413 | Body larger than 64 KB |
+| 429 | Too many searches running (at most 2 at a time) |
+| 504 | Search took too long |
+
+---
+
+## 2. The alert object
+
+```jsonc
+{
+  "id": "a192a03e-70d0-4c3d-9f75-3c6bbef3e82c",   // stable, unique: the dedupe key
+  "timestamp": "2026-09-23T11:32:27.104729+00:00", // when the detector raised it
+  "type": "intrusion",          // port_scan | intrusion | phishing | malware | vuln
+  "severity": "medium",         // normal | medium | critical
+  "title": "Windows host not in the domain: DESKTOP-SUKLCOQ (10.69.11.94)",
+  "description": "…",
+  "detector": "ad_inventory",   // which Kali component raised it (GET /api/detections lists them)
+  "source_ip": "10.69.11.94",   // may be null
+  "hostname": "DESKTOP-SUKLCOQ",// may be null
+  "user": null,                 // may be null
+  "status": "open",             // open | acknowledged | resolved
+  "status_updated": "…",        // only after a status change
+  "status_actor": "jdoe",       // who changed it (the API key's user, or "auto-aging", "selftest"…)
+  "status_note": "…",           // why; absent when the last change had no note
+  "test": true,                 // only on synthetic alerts: keep them out of real views
+  "details": { … }              // free-form, see below
+}
+```
+
+**Severity.** `critical` is also pushed to the on-call phone. `medium` means a person should look at it.
+`normal` is informational. The platform maps `normal` to `low`, and its default triage view shows `medium`
+and up, so anything a person must see is raised as at least `medium`.
+
+### `details`: the fields a consumer can rely on
+
+`details` is free-form: each detector adds its own keys. These ones are common to many detectors and
+have a stable shape:
+
+| Key | Shape | Meaning |
+|---|---|---|
+| `entities` | `[{"type": "ip\|mac\|host\|user", "value": "…", "role": "source\|destination"}]` | Everything the alert is about. These are the keys for `/api/entities/<type:value>` |
+| `identity` | `{"as_of", "computers": [{name, in_domain, ou, os, build, enabled, last_logon, os_support, os_support_ends, ip}], "users": [{sam, name, ou, enabled, last_logon, privileged_groups}]}` | Who and what the alert is about, according to Active Directory. Present only when something matched. `in_domain: false` means a Windows machine AD does not know |
+| `mitre` | `[{"technique", "name", "tactics": [...], "basis": "observed\|exposure"}]` | MITRE ATT&CK tags |
+| `incident_id`, `incident_number` | string, int | The incident this alert belongs to (§3.3) |
+| `geo` | `{country, region, city, asn, org…}` | For public IPs only |
+| `anonymizer`, `anonymizer_ip` | `{tor, vpn, proxy, datacenter, anonymized, type…}`, ip | Tor, VPN or hosting source |
+| `threat_intel` | `{"ip_matches": [{indicator, feed, role}], "kev": [{cve, …}]}` | Threat-feed hit, or a CVE in CISA KEV |
+| `pcap` | path on the Kali | A packet capture exists: download it with `GET /api/alerts/<id>/pcap` |
+| `source_role` | `actor\|asset` | Whether `source_ip` is the attacker (`actor`) or the scanned or affected machine (`asset`) |
+| `source_is_self` | `true` | The source is the Kali itself (its own scans) |
+| `group_key`, `batch_id` | strings | Grouping of similar alerts, and of alerts raised in the same burst |
+| `change`, `previous_title` | strings | Why a state-tracking detector fired (`added`, `removed`, `new_device`, …) |
+
+---
+
+## 3. Read endpoints (`GET`, any key)
+
+### 3.1 Alerts
+
+| Path | Parameters | Returns |
+|---|---|---|
+| `/api/health` (no auth) | none | `{"status": "ok", "alerts": <n>, "time"}` |
+| `/api/summary` | none | `{total, by_severity, by_type, by_status}` |
+| `/api/alerts` | `severity`, `type`, `detector`, `status`, `since`, `status_since`, `limit` (default 100, max 1000) | `{"count", "alerts": [alert…]}` |
+| `/api/alerts/<id>` | none | One alert, or 404 |
+| `/api/alerts/<id>/pcap` | none | The capture file (`Content-Disposition: attachment`), or 404. Only files inside the Kali's capture directory are served |
+| `/api/hosts` | same filters as `/api/alerts` | Alerts grouped by host |
+
+Details on the `/api/alerts` parameters:
+
+- **`since`** filters by `timestamp` (`>=`). Results are newest first.
+- **`status_since`** filters by `status_updated` (`>=`): only alerts whose status changed at or after that
+  instant. These results are **oldest change first**, so a poller can advance its watermark to the last
+  `status_updated` it received.
+- The feed holds the latest **5,000** alerts. Older ones stay in the Kali's history, but they are no longer
+  served here and their status can no longer change.
+
+### 3.2 Investigation
+
+| Path | Parameters | Returns |
+|---|---|---|
+| `/api/entities` | `type` (`ip\|mac\|host\|user`), `limit` (default 50, max 200) | `{"count", "entities": [{key, type, value, risk, risk_level, open_alerts: {critical, medium, normal}, incidents_open, last_seen}]}`, riskiest first |
+| `/api/entities/<type:value>` | none | The entity plus `asset`, `incidents`, `techniques`, `timeline` |
+| `/api/entities/<type:value>/graph` | none | `{"nodes": [{id, kind, label, …}], "edges": [{from, to, label}]}` |
+| `/api/activity` | `category`, `actor`, `since`, `limit` (default 100, max 500) | `{"count", "categories", "activity": [{at, actor, action, summary, ref, category}]}`. Categories: `alert_status`, `asset_annotation`, `incident`, `playbook_run`, `suppression`, `watchlist`, `alert_aging` |
+| `/api/search/sources` | none | Searchable sources, limits, syntax and examples |
+| `/api/search` | `source` (`alerts`, `suricata`, `zeek:<log>`), `q`, `since` (e.g. `6h`), `limit`, `timeout` | Matching raw records, newest first, plus what ended the search (limit, time or size) |
+
+In a graph, `kind` is one of `incident`, `alert`, `ip`, `mac`, `host`, `user`. `alert` nodes also carry
+`severity`, `detector`, `status` and `timestamp`. A node's `id` is unique within the graph.
+
+The search syntax is: `word`, `field:value`, `field~text`, `field:10.0.0.0/8`, and `-term` to exclude.
+Regular expressions are not accepted.
+
+### 3.3 Incidents
+
+Incidents are opened by the Kali's correlation rules (`GET /api/detections` lists them) when related
+alerts line up. **The Kali owns them**: the platform reads them rather than keeping a copy.
+
+| Path | Parameters | Returns |
+|---|---|---|
+| `/api/incidents` | `status` (`new\|active\|closed`), `severity`, `limit` (default 100, max 500) | `{"count", "incidents": [incident without comments, + comment_count]}` |
+| `/api/incidents/<id or number>` | none | The incident, with `comments`, its `alerts` and `alerts_not_in_feed` |
+| `/api/incidents/<id or number>/graph` | none | Graph, same shape as the entity graph |
+
+Incident fields: `id`, `number`, `title`, `severity` (`medium\|critical`), `status`, `classification`
+(`true_positive\|false_positive\|benign\|undetermined` or `null`), `owner`, `rule_id`, `rule_name`,
+`entities`, `alert_ids`, `alert_count`, `mitre`, `created`, `updated`, `first_alert_at`, `last_alert_at`,
+`comments`.
+
+### 3.4 Health, coverage and reports
+
+| Path | Returns |
+|---|---|
+| `/api/metrics` | Alert and incident counts, time to acknowledge and to resolve (MTTA/MTTR), riskiest entities |
+| `/api/sources` | `{"checked", "sources": [{id, name, kind, max_age_minutes, status, last_event, age_minutes, since}]}`: has each data source produced data recently? |
+| `/api/detections` | Every detector (alerts in the last 7 and 30 days, last alert, MITRE, settings), the MITRE coverage and the correlation rules |
+| `/api/mitre` | Coverage matrix: covered, limited or gap per technique, and which missing data source would close each gap |
+| `/api/reports` | Saved weekly reports: `[{date, json, markdown}]` |
+| `/api/reports/weekly` | `date` (optional; without it, a live report), `format=markdown` (optional) |
+| `/api/self` | `{hostname, addresses: [{ip, interface}]}`: the Kali's own addresses |
+
+### 3.5 Assets, tuning and automation
+
+| Path | Returns |
+|---|---|
+| `/api/assets` | `vlan` (optional). Devices seen on the network (ARP scan), keyed by MAC: `ip`, `vendor`, `cidr`, `first_seen`, `last_seen`, `seen_count`, `owner`, `notes`, `authorized`, `scan_facts` (OS, Windows build, SMB signing), `software` |
+| `/api/suppressions` | `{"count", "rules": [{id, source, reason, added_by, added, expires, expired, allow_critical, match, hits_total, hits_24h}], "errors"}` |
+| `/api/watchlists` | `{"watchlists": [{name, description, used_by, count, entries}]}`. The names are `trusted_ips`, `bad_ips`, `bad_domains`, `bad_hashes`, `dhcp_servers`, `ra_sources`, `sensitive_vlans`, `untrusted_vlans` |
+| `/api/watchlists/<name>` | One list |
+| `/api/playbooks` | Automatic responses: `{playbooks: [{id, name, enabled, dry_run, cooldown_minutes, trigger, actions, last_run, runs_24h, errors_24h}], errors, dry_run_all}` |
+| `/api/playbooks/runs` | `limit` (default 50, max 200). Recent runs |
+
+---
+
+## 4. Write endpoints (`write` key)
+
+| Method and path | Body | Effect |
+|---|---|---|
+| `POST /api/alerts/<id>/status` | `{"status": "open\|acknowledged\|resolved", "note": "…"}` | Triage status. Records `status_actor` (the key's user), `status_updated` and `status_note`. Returns the updated alert. 404 if the alert is no longer in the feed |
+| `POST /api/incidents/<id or number>` | any of `status`, `classification`, `owner`, `comment` | Updates the incident. A comment is attributed to the key's user |
+| `POST /api/assets/<mac>/notes` | any of `owner`, `notes`, `authorized` (bool) | Annotates a device already seen on the network |
+| `POST /api/suppressions/preview` | `{"alert_id", "scope": "similar\|host\|broad"}` or `{"match"}`, plus `days` | How many past alerts the rule would have hidden. Creates nothing |
+| `POST /api/suppressions` | `{"reason", "alert_id", "scope"}` or `{"reason", "match"}`, plus `expires_days` (default 30, max 365) and `resolve_existing` | Creates a rule. Rules always expire and never hide critical alerts |
+| `DELETE /api/suppressions/<id>` | none | Removes a rule created through the API |
+| `POST /api/watchlists/<name>` | `{"entry": "…"}` | Adds an entry, which is validated per list (IP, CIDR, domain, hash…) |
+| `DELETE /api/watchlists/<name>?entry=…` | none | Removes an entry |
+
+Every write also appears in `GET /api/activity`.
+
+---
+
+## 5. Keeping the platform in sync
+
+### 5.1 New alerts (the backend's current poller)
+
+```
+GET /api/alerts?since=<newest timestamp already stored>&limit=1000
+```
+
+- Use `id` as the dedupe key. Results are newest first.
+- If a page is full (1,000 alerts), go back to the oldest `timestamp` on it for the next call, so no gap is left.
+- An alert with `"test": true` goes to the test lane.
+
+### 5.2 Status changes, Kali to platform
+
+```
+GET /api/alerts?status_since=<last status_updated received>&limit=1000
+```
+
+- For each alert returned, update **only** `status` and the `status_updated`, `status_actor` and
+  `status_note` fields, then keep the last `status_updated` as the next watermark.
+- This covers changes made on the Kali: automatic aging, the self-test, suppressions that resolve existing
+  alerts, and anyone using the Kali's own tools.
+
+### 5.3 Status changes, platform to Kali
+
+When an analyst changes an alert that came from the Kali (the platform keeps its id in
+`details.kali_id`):
+
+```
+POST /api/alerts/<kali_id>/status   {"status": "resolved", "note": "[jdoe] <reason>"}
+```
+
+This needs a `write` key for the backend. **Avoid loops:** a status the poller received from the Kali
+(§5.2) must not be posted back to the Kali. A change posted to the Kali comes back through §5.2 with
+`status_actor` equal to the backend key's user; since the status is already the same, applying it again
+changes nothing.
+
+---
+
+## 6. Suggested mapping for a backend proxy
+
+To serve these endpoints to the dashboard without exposing the Kali key in the browser, a backend proxy
+can gate them by platform role:
+
+| Platform role | Kali endpoints |
+|---|---|
+| viewer | Every `GET` in §3 except `/api/search` and `/api/alerts/<id>/pcap` |
+| analyst | Everything above, plus search, pcap download and the §4 writes on alerts, incidents and asset notes |
+| admin | Everything, including suppressions and watchlists |
+
+The backend holds one read key and one write key and records the analyst in its own audit log.
+Search and pcap download are expensive or sensitive, so they should be logged on the backend side too.
+
+---
+
+## 7. Detectors (`detector`)
+
+`GET /api/detections` is the live list. As of this writing:
+
+`suricata`, `zeek`, `traffic_capture`, `kali_scan`, `port_scanner`, `arp_discovery`, `l2_watch`,
+`login_monitor`, `osquery`, `aide`, `chkrootkit`, `vlan_segmentation`, `ad_inventory`,
+`malware_detector`, `phishing_detector`, `nikto`, `whatweb`, `correlation` (incidents),
+`service_watchdog`, `source_health`, `disk_space_check`, `system_updates`, `soc_doctor`,
+`code_freshness`, `selftest`.
+
+The detectors from `service_watchdog` onward watch the Kali itself.
+
+---
+
+## 8. Changes since the copy in ERA-SOC (`SOC-Back/docs/kali/API_SPEC_EN.md`)
+
+- The old copy said "GET only, one shared token". Today there are per-user keys with `read` and `write`
+  roles, and write endpoints (§4).
+- New since that copy: `status_since`, `status_actor`, `status_note`, pcap download, incidents and their
+  graph, entities and their graph, activity, search, suppressions, watchlists, playbooks, metrics,
+  sources, detections, the MITRE matrix, reports, and assets.
+- New keys in `details`: `identity` (Active Directory), `entities`, `incident_id`, `threat_intel`,
+  `source_role`, `source_is_self`.
+
+---
+
+## 9. Planned: HTTPS and access only from the backend
+
+- **Today:** plain HTTP on `0.0.0.0:8080`, reachable from all six VLANs. The backend polls from
+  `10.69.0.80`.
+- **Planned:** HTTPS with the Kali's own certificate, and the firewall allowing only `10.69.0.80`
+  (plus local access on the Kali). The backend already supports this (`KALI_API_URL=https://…`,
+  `KALI_API_CA_CERT`). The switch will be coordinated so the alert flow never stops: both schemes will
+  run in parallel until the backend has moved over.

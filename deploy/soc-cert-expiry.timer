@@ -1,0 +1,10 @@
+[Unit]
+Description=Check certificate expiry once a day
+
+[Timer]
+OnCalendar=*-*-* 07:10
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

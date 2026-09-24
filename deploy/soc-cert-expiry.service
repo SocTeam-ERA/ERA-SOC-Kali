@@ -1,0 +1,9 @@
+[Unit]
+Description=Sentinel SOC certificate expiry check (the Kali API's HTTPS certificate and its CA)
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+Environment=SOC_MAX_SNAPSHOT=5000
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/cert_expiry.py

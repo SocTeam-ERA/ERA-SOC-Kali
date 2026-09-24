@@ -303,6 +303,8 @@ The detectors from `service_watchdog` onward watch the Kali itself.
   file is public and safe to copy. Renewing the API certificate (`make_api_cert.sh --renew`, every 825 days)
   then needs no change on the backend.
 - The keys never leave the Kali.
+- `scripts/cert_expiry.py` (daily, `soc-cert-expiry.timer`) alerts at 30 days before expiry (medium) and 7 days
+  (critical, pushed to the phone), for `api.pem`, `ca.pem` and the certificate the HTTPS API actually serves.
 
 **Switch-over, without stopping the alert flow:**
 1. The Kali serves both: 8080 (HTTP) and 8443 (HTTPS). *(done)*

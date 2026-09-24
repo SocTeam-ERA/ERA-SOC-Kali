@@ -1315,9 +1315,31 @@ def inner() -> int:
                 served = False
             check("...and one stalled client does not block the others (handshake runs per connection)",
                   served and time.monotonic() - stall_start < 5)
+        import cert_expiry as CE
+        na_ = CE.not_after_file(tdir / "api.pem")
+        check("cert_expiry reads a certificate's expiry from the file and from the running HTTPS API",
+              na_ is not None and CE.not_after_live(f"127.0.0.1:{tport}", tdir / "ca.pem") == na_
+              and CE.not_after_file(tdir / "missing.pem") is None)
     finally:
         tproc.terminate()
         tproc.wait(timeout=10)
+    import cert_expiry as CE
+    from datetime import timedelta
+    now_ = datetime(2026, 9, 24, tzinfo=timezone.utc)
+    exp = lambda days: {"api": ("API cert", now_ + timedelta(days=days))}  # noqa: E731
+    a1, s1 = CE.evaluate(exp(400), {}, now_)
+    a2, s2 = CE.evaluate(exp(25), s1, now_)
+    a3, s3 = CE.evaluate(exp(24), s2, now_)
+    a4, s4 = CE.evaluate(exp(5), s3, now_)
+    a5, _ = CE.evaluate(exp(800), s4, now_)
+    check("certificate expiry: nothing far out, medium at 30 days, once, critical at 7, and a note when renewed",
+          a1 == [] and [x_["severity"] for x_ in a2] == ["medium"] and a3 == []
+          and [x_["severity"] for x_ in a4] == ["critical"] and [x_["severity"] for x_ in a5] == ["normal"]
+          and "renewed" in a5[0]["title"], str([a1, a2, a3, a4, a5])[:300])
+    a6, _ = CE.evaluate({"api": ("API cert", now_ - timedelta(days=1))}, {}, now_)
+    check("...an expired one says so, and an unreadable one changes nothing",
+          "EXPIRED" in a6[0]["title"] and a6[0]["severity"] == "critical"
+          and CE.evaluate({"api": ("API cert", None)}, {"api": "medium"}, now_) == ([], {"api": "medium"}))
 
     # ---- (added) API server with read and write keys ------------------------------
     group("api")

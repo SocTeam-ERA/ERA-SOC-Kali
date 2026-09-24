@@ -39,7 +39,7 @@ FORCE=0; [[ "${1:-}" == "--force" ]] && FORCE=1
 # The units that push critical alerts to the phone get the ntfy topic.
 NTFY_SERVICES="soc-aide-check soc-check-updates soc-login soc-chkrootkit-forwarder soc-disk-check soc-ntfy-flush
   soc-scan soc-osquery-forwarder soc-traffic-monitor soc-vuln-scan soc-watchdog soc-zeek-forwarder
-  soc-suricata-forwarder soc-vlan-segmentation soc-ad-inventory soc-ad-privileged soc-l2-watch soc-poisoner-canary"
+  soc-suricata-forwarder soc-vlan-segmentation soc-ad-inventory soc-ad-privileged soc-l2-watch soc-poisoner-canary soc-cert-expiry"
 
 changed="$(cd "$SUITE/scripts" && python3 -c 'import deploy_drift as d
 print(" ".join(n for k, n in d.drift(check_crontab=False) if k == "changed"))')"

@@ -1789,6 +1789,33 @@ def inner() -> int:
           DD.sensor_drift(gr / "deploy", sroot) == [("changed", "sensors/opt/zeek/site/local.zeek")],
           str(DD.sensor_drift(gr / "deploy", sroot)))
     (sroot / "opt" / "zeek" / "site" / "local.zeek").unlink()
+    # soc-nmap: the only thing sudo lets the SOC user run as root for scans (deploy/bin/soc-nmap)
+    group("soc-nmap")
+    wrap = SUITE / "deploy" / "bin" / "soc-nmap"
+    nres = tmp / "nmap_results"
+    nres.mkdir()
+    (nres / "t.txt").write_text("127.0.0.1\n# a comment\n")
+    wenv = dict(os.environ, SOC_NMAP_RESULTS=str(nres))
+    wrun = lambda *a: subprocess.run([sys.executable, "-I", str(wrap), *a], env=wenv, capture_output=True,  # noqa: E731
+                                     text=True, timeout=60)
+    r = wrun("-sn", "-oA", str(nres / "ok"), "-iL", str(nres / "t.txt"))
+    check("an allowed scan runs, with its target list and its output inside the results directory",
+          r.returncode == 0 and (nres / "ok.xml").exists() and "127.0.0.1" in (nres / "ok.xml").read_text(), r.stderr)
+    (nres / "shadow.txt").symlink_to("/etc/shadow")
+    attacks = [["--script", "/tmp/x.nse", "127.0.0.1"], ["--script-args", "x=1", "127.0.0.1"],
+               ["-oA", "/etc/cron.d/x", "127.0.0.1"], ["-iL", "/etc/shadow"], ["-iL", str(nres / "shadow.txt")],
+               ["-oA", str(nres / ".." / "x"), "127.0.0.1"], ["-sn", "-oA", str(nres / "a"), "-oA", "/tmp/b", "1.2.3.4"],
+               ["--interactive"], ["-sn", ";id"], ["-sn", "--datadir", "/tmp", "127.0.0.1"]]
+    refused = [a_ for a_ in attacks if wrun(*a_).returncode != 2]
+    check("everything that would make sudo nmap root is refused (scripts by path, script args, writes or reads "
+          "outside the results directory, symlinks, repeated -oA, unknown options, shell text)", not refused, str(refused))
+    check("the scans call soc-nmap, never nmap itself, and the sudo rule names only soc-nmap",
+          not any("sudo nmap " in (SUITE / "kali" / f_).read_text()
+                  for f_ in ("1_host_discovery.sh", "2_port_service_scan.sh", "3_vuln_scan.sh"))
+          and "/usr/bin/nmap" not in "".join(l_ for l_ in (SUITE / "deploy" / "sudoers" / "soc-nmap-nopasswd").read_text()
+                                                  .splitlines() if not l_.startswith("#")))
+
+    group("deploy drift")
     fw_ok = "Status: active\nDefault: deny (incoming)\n\n22/tcp ALLOW IN 10.100.0.0/24 # SSH admin\n"
     (gr / "deploy" / "firewall").mkdir()
     (gr / "deploy" / "firewall" / "ufw-status.txt").write_text("# header\n" + fw_ok)

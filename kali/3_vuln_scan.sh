@@ -100,7 +100,7 @@ for ((i = 0; i < TOTAL_HOSTS; i += BATCH_SIZE)); do
   batch_out="$BATCH_DIR/vuln_${batch_num}"
   log "Batch $batch_num/$TOTAL_BATCHES ($(wc -l < "$batch_file") hosts)..."
   # shellcheck disable=SC2069
-  if sudo nmap -sV --script "$SCRIPTS" -T3 --max-parallelism "$MAX_PARALLELISM" \
+  if sudo /usr/local/sbin/soc-nmap -sV --script "$SCRIPTS" -T3 --max-parallelism "$MAX_PARALLELISM" \
        -oA "$batch_out" -iL "$batch_file" 2>&1 | tee -a "${OUT}.log"; then
     :
   else
@@ -205,7 +205,7 @@ fi
 if [[ "${SKIP_SNMP:-0}" != "1" ]]; then
   SNMP_OUT="$RESULTS_DIR/snmp_${STAMP}"
   log "Checking for default/weak SNMP community strings (UDP/161)..."
-  sudo nmap -sU -p 161 --script snmp-brute,snmp-info --max-parallelism "$MAX_PARALLELISM" \
+  sudo /usr/local/sbin/soc-nmap -sU -p 161 --script snmp-brute,snmp-info --max-parallelism "$MAX_PARALLELISM" \
        -oA "$SNMP_OUT" -iL "$EXPANDED_TARGETS" >/dev/null 2>&1 || true
   if [[ -f "${SNMP_OUT}.xml" ]] && command -v python3 >/dev/null 2>&1; then
     python3 "$SUITE_DIR/nmap_to_alerts.py" "${SNMP_OUT}.xml" || true

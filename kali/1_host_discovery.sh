@@ -30,7 +30,7 @@ OUT_RAW="$RESULTS_DIR/host_discovery_${STAMP}"
 # -sn = ping scan (no ports).  -PE/-PP/-PM = ICMP echo/timestamp/netmask.
 # -PS/-PA on common ports catches hosts that block ICMP.  --min-rate speeds it up.
 # shellcheck disable=SC2086
-sudo nmap -sn -PE -PP -PS21,22,23,80,443,3389 -PA80,443 \
+sudo /usr/local/sbin/soc-nmap -sn -PE -PP -PS21,22,23,80,443,3389 -PA80,443 \
      --min-rate 500 -oA "$OUT_RAW" $TARGETS | tee "$RESULTS_DIR/host_discovery_${STAMP}.log"
 
 grep "Up$" "${OUT_RAW}.gnmap" | awk '{print $2}' > "$OUT_LIVE" || true

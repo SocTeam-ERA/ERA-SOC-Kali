@@ -1,1 +1,4 @@
-adelcueto ALL=(root) NOPASSWD: /usr/bin/nmap
+# The scheduled scans (soc-scan, soc-vuln-scan) run as this user and need root for SYN/OS/UDP scans.
+# NOT nmap itself: "sudo nmap" is root for whoever holds this account (--script runs any Lua, -oA writes
+# anywhere). /usr/local/sbin/soc-nmap (deploy/bin/soc-nmap) allows only the options the scans use.
+adelcueto ALL=(root) NOPASSWD: /usr/local/sbin/soc-nmap

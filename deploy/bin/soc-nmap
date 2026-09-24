@@ -1,0 +1,204 @@
+#!/usr/bin/python3 -I
+"""
+soc-nmap -- run nmap as root for the SOC's scans, and nothing else.
+
+Installed root-owned at /usr/local/sbin/soc-nmap by deploy/install_all.sh; sudo allows the SOC
+user to run THIS (deploy/sudoers/soc-nmap-nopasswd), not nmap itself.
+
+Why: "sudo nmap" without a password is root for anyone who gets the SOC user's account. nmap
+runs Lua scripts (--script /tmp/x.nse), writes files anywhere (-oA /etc/cron.d/x) and prints the
+lines of any file it is given as a target list (-iL /etc/shadow). This wrapper only lets through
+the options the SOC's scans use (kali/1_host_discovery.sh, 2_port_service_scan.sh,
+3_vuln_scan.sh), and checks each value:
+  * --script: installed NSE scripts or nmap's own categories only, never a path;
+  * -oA: an output name inside the SOC's results directory;
+  * -iL: a target list inside the SOC's results directory;
+  * targets: IPs, CIDRs, ranges and host names, never an option.
+It then runs /usr/bin/nmap with a clean environment and the system data directory, so no
+user-controlled NMAPDIR, HOME or ~/.nmap is read. The target list is read here without following
+symlinks and passed to nmap on stdin, and nmap writes its output into a private root-only directory
+that is then copied into RESULTS without following symlinks, so swapping a file or directory for a
+link between the check and the use gains nothing (RESULTS is writable by the SOC user).
+
+Usage: exactly like nmap with the allowed options, e.g.
+    sudo /usr/local/sbin/soc-nmap -sS -sV -O -sC -T4 --open --top-ports 1000 -oA <results>/x -iL <results>/t.txt
+"""
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+NMAP = "/usr/bin/nmap"
+DATADIR = "/usr/share/nmap"
+RESULTS = os.path.realpath(os.environ.get("SOC_NMAP_RESULTS", "/opt/sentinel-soc/kali/results")) \
+    if os.geteuid() != 0 else "/opt/sentinel-soc/kali/results"   # as root, never taken from the environment
+
+FLAGS = {"-sn", "-PE", "-PP", "-sS", "-sV", "-O", "-sC", "-sU", "--open", "-p-", "-n"}
+CATEGORIES = {"auth", "broadcast", "brute", "default", "discovery", "dos", "exploit", "external", "fuzzer",
+              "intrusive", "malware", "safe", "version", "vuln"}
+PORTS = re.compile(r"^[0-9][0-9,\-]{0,200}$")
+TIMING = re.compile(r"^-T[0-5]$")
+PROBE = re.compile(r"^-P[SA][0-9][0-9,]{0,100}$")
+TARGET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.:/\-]{0,252}$")
+NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,120}$")
+
+
+def fail(msg: str) -> "NoReturn":
+    print(f"soc-nmap: refused: {msg}", file=sys.stderr)
+    sys.exit(2)
+
+
+def inside_results(path: str) -> str:
+    """The absolute path, if it lies inside RESULTS (after resolving symlinks and ..)."""
+    real = os.path.realpath(path)
+    if os.path.commonpath([real, RESULTS]) != RESULTS or real == RESULTS:
+        fail(f"{path!r} is outside {RESULTS}")
+    if not NAME.match(os.path.basename(real)):
+        fail(f"unexpected characters in {path!r}")
+    return real
+
+
+def _open_dir_nofollow(path: str) -> int:
+    """A directory fd for path, opened component by component without following any symlink: RESULTS
+    is writable by the SOC user, who could otherwise swap a directory for a link to /etc."""
+    fd = os.open("/", os.O_DIRECTORY | os.O_PATH)
+    for part in [p for p in path.split("/") if p]:
+        try:
+            nfd = os.open(part, os.O_DIRECTORY | os.O_PATH | os.O_NOFOLLOW, dir_fd=fd)
+        except OSError as e:
+            os.close(fd)
+            fail(f"cannot open {path!r} safely: {e.strerror}")
+        os.close(fd)
+        fd = nfd
+    return fd
+
+
+def read_targets(path: str) -> bytes:
+    """The target list, read here (not by nmap as root) without following symlinks, every line checked:
+    nmap prints unparseable lines, so '-iL /etc/shadow' would print the password hashes."""
+    real = inside_results(path)
+    dfd = _open_dir_nofollow(os.path.dirname(real))
+    try:
+        fd = os.open(os.path.basename(real), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dfd)
+    except OSError as e:
+        fail(f"cannot read {path!r}: {e.strerror}")
+    finally:
+        os.close(dfd)
+    with os.fdopen(fd, "rb") as fh:
+        data = fh.read(4_000_000)
+    lines = []
+    for line in data.decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        for tok in line.split():
+            if not TARGET.match(tok):
+                fail(f"{path!r} has a line that is not a target")
+            lines.append(tok)
+    return ("\n".join(lines) + "\n").encode()
+
+
+def copy_out(tmp: str, dest: str) -> None:
+    """Move nmap's output files (written into a private root-only directory) to dest.{nmap,gnmap,xml},
+    opening the destination directory without following symlinks and never replacing a symlink."""
+    dfd = _open_dir_nofollow(os.path.dirname(dest))
+    try:
+        for ext in ("nmap", "gnmap", "xml"):
+            src = os.path.join(tmp, f"out.{ext}")
+            if not os.path.exists(src):
+                continue
+            name = f"{os.path.basename(dest)}.{ext}"
+            try:
+                fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o664, dir_fd=dfd)
+            except OSError as e:
+                fail(f"cannot write {name!r}: {e.strerror}")
+            with open(src, "rb") as fin, os.fdopen(fd, "wb") as fout:
+                shutil.copyfileobj(fin, fout)
+    finally:
+        os.close(dfd)
+
+
+def check_scripts(value: str) -> str:
+    for item in value.split(","):
+        if item in CATEGORIES:
+            continue
+        if not NAME.match(item) or not os.path.isfile(os.path.join(DATADIR, "scripts", item + ".nse")):
+            fail(f"--script {item!r} is neither an nmap category nor an installed script")
+    return value
+
+
+def validate(argv: list) -> list:
+    for once in ("-oA", "-iL", "--script"):
+        if argv.count(once) > 1:
+            fail(f"{once} given more than once")
+    out, i = [], 0
+    while i < len(argv):
+        a = argv[i]
+        nxt = argv[i + 1] if i + 1 < len(argv) else None
+        if a in FLAGS or TIMING.match(a) or PROBE.match(a):
+            out.append(a)
+        elif a in ("--min-rate", "--max-parallelism", "--top-ports"):
+            if nxt is None or not nxt.isdigit() or not 0 < int(nxt) <= 100000:
+                fail(f"{a} needs a number")
+            out += [a, nxt]
+            i += 1
+        elif a == "-p":
+            if nxt is None or not PORTS.match(nxt):
+                fail("-p needs a port list")
+            out += [a, nxt]
+            i += 1
+        elif a == "--script":
+            if nxt is None:
+                fail("--script needs a value")
+            out += [a, check_scripts(nxt)]
+            i += 1
+        elif a == "-oA":
+            if nxt is None:
+                fail("-oA needs a name")
+            real = os.path.join(os.path.realpath(os.path.dirname(nxt) or "."), os.path.basename(nxt))
+            out += [a, inside_results(real)]
+            i += 1
+        elif a == "-iL":
+            if nxt is None:
+                fail("-iL needs a file")
+            out += [a, nxt]      # read and checked in main(), then given to nmap on stdin
+            i += 1
+        elif a.startswith("-"):
+            fail(f"option {a!r} is not allowed")
+        elif TARGET.match(a):
+            out.append(a)
+        else:
+            fail(f"target {a!r} is not an IP, network, range or host name")
+        i += 1
+    return out
+
+
+def main() -> int:
+    args = validate(sys.argv[1:])
+    if not args:
+        fail("nothing to do")
+    targets = None
+    dest = None
+    if "-iL" in args:
+        k = args.index("-iL")
+        targets = read_targets(args[k + 1])
+        args[k + 1] = "-"
+    tmp = tempfile.mkdtemp(prefix="soc-nmap-")          # root-only (0700): nmap writes here, not into RESULTS
+    try:
+        if "-oA" in args:
+            k = args.index("-oA")
+            dest = args[k + 1]
+            args[k + 1] = os.path.join(tmp, "out")
+        env = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root", "LANG": "C.UTF-8"}
+        rc = subprocess.run([NMAP, "--datadir", DATADIR, *args], input=targets, env=env).returncode
+        if dest:
+            copy_out(tmp, dest)
+        return rc
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

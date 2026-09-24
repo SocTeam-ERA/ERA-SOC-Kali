@@ -13,7 +13,8 @@
 #    3. the ntfy topic into a private drop-in (<unit>.service.d/ntfy.conf, mode 600) for every unit
 #       that pushes to the phone. Taken from $NTFY_TOPIC, else from what is installed, else asked.
 #    4. every soc-* unit, timer and non-secret drop-in from deploy/
-#    5. the sudoers rule (checked with visudo first)
+#    5. the root-owned helpers of deploy/bin/ into /usr/local/sbin (e.g. soc-nmap), then the sudoers rules
+#       (checked with visudo first)
 #    6. the user crontab, only when the user has none (otherwise the difference is shown)
 #    7. daemon-reload, then enable and start every timer and every service that has an [Install]
 #
@@ -129,11 +130,17 @@ else
   echo "[4/7] sensor configuration already matches deploy/sensors/"
 fi
 
+# Root-owned helpers the sudoers rules point at (deploy/bin/ -> /usr/local/sbin/, root:root 755). Installed
+# before the sudoers rules, so a rule never points at a program that is not there yet.
+for b in "$SRC"/bin/*; do
+  [[ -f "$b" ]] || continue
+  install -o root -g root -m 755 "$b" "/usr/local/sbin/$(basename "$b")"
+done
 for s in "$SRC"/sudoers/*; do
   visudo -cqf "$s" || { echo "[!] $s does not pass visudo; skipped"; continue; }
   install -m 440 "$s" "/etc/sudoers.d/$(basename "$s")"
 done
-echo "[5/7] sudoers rules installed"
+echo "[5/7] helpers in /usr/local/sbin and sudoers rules installed"
 
 if ! crontab -u "$SOC_USER" -l >/dev/null 2>&1; then
   crontab -u "$SOC_USER" "$SRC/crontab.txt"

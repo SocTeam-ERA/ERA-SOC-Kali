@@ -26,6 +26,8 @@ Problems reported (each one names the file):
   not installed  deploy/ has a unit or drop-in that is not installed
   crontab        the user crontab differs from deploy/crontab.txt
   secret         a file in deploy/ carries a value for NTFY_TOPIC
+  unsafe         a helper sudo runs as root (deploy/bin/ -> /usr/local/sbin) is not root-owned or is writable
+                 by others
   firewall       the live ufw rules differ from deploy/firewall/ufw-status.txt (read through a read-only
                  sudo rule; rules are never applied automatically)
 
@@ -81,7 +83,7 @@ def _units(root: Path) -> dict[str, Path]:
 def _read(p: Path) -> str | None:
     try:
         return p.read_text()
-    except OSError:
+    except (OSError, UnicodeDecodeError):     # unreadable, or not a text file (e.g. a stray .pyc)
         return None
 
 
@@ -149,6 +151,28 @@ def firewall_drift(repo: Path = REPO, live: str | None = None) -> list[tuple[str
     return [("firewall outdated" if normalize(live) in _committed_versions(repo, name) else "firewall", name)]
 
 
+def bin_drift(repo: Path = REPO, sbin: Path = Path("/usr/local/sbin")) -> list[tuple[str, str]]:
+    """[(kind, "bin/<name>")] for each helper of repo/bin/ that differs from sbin/<name>, or whose installed
+    copy is not root-owned and closed to others' writes: a sudoers rule runs it as root, so anyone who
+    can change the file owns the machine."""
+    problems = []
+    base = repo / "bin"
+    if not base.is_dir():
+        return problems
+    for f in sorted(p for p in base.iterdir() if p.is_file()):
+        live, name = sbin / f.name, f"bin/{f.name}"
+        if not live.exists():
+            problems.append(("not installed", name))
+            continue
+        st = live.stat()
+        if st.st_uid != 0 or st.st_mode & 0o022:
+            problems.append(("unsafe", name))
+        if _read(live) != _read(f):
+            committed = _committed_versions(repo, name)
+            problems.append(("outdated" if normalize(_read(live) or "") in committed else "changed", name))
+    return problems
+
+
 def sensor_drift(repo: Path = REPO, root: Path = Path("/")) -> list[tuple[str, str]]:
     """[(kind, "sensors/<path>")] for each file of repo/sensors/ that differs from root/<path>. A file this
     user cannot read is skipped rather than reported (the daily self-test runs unprivileged)."""
@@ -177,6 +201,8 @@ def drift(repo: Path = REPO, live: Path = LIVE, crontab: str | None = None,
     problems = []
     if check_firewall:
         problems += firewall_drift(repo)
+    if sensors_root is not None:
+        problems += bin_drift(repo)
     if sensors_root is not None:
         problems += sensor_drift(repo, sensors_root)
     have, want = _units(live), _units(repo)
@@ -207,6 +233,7 @@ EXPLAIN = {
     "outdated": "an earlier version from deploy/ is installed: run sudo deploy/install_all.sh",
     "not installed": "in deploy/ but not installed: run sudo deploy/install_all.sh",
     "crontab": "the crontab differs from deploy/crontab.txt: crontab -l > deploy/crontab.txt, or install that file",
+    "unsafe": "a root helper in /usr/local/sbin is writable by someone other than root: reinstall it (install_all.sh)",
     "firewall": ("the live firewall (ufw) differs from deploy/firewall/ufw-status.txt: someone changed a rule. If it "
                  "was intended, record it (deploy_drift.py --save-firewall) and commit; if not, undo it"),
     "firewall outdated": ("deploy/firewall/ has rules that are not applied yet: apply them with ufw by hand "

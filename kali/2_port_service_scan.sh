@@ -87,7 +87,7 @@ fi
 # -sS SYN scan | -sV version detect | -O OS detect | -sC default NSE scripts
 # -T4 timing | --open only show open ports
 # shellcheck disable=SC2086
-sudo nmap -sS -sV -O -sC -T4 --open $PORTSPEC \
+sudo /usr/local/sbin/soc-nmap -sS -sV -O -sC -T4 --open $PORTSPEC \
      -oA "$OUT" "${TARGET_ARG[@]}" | tee "${OUT}.log"
 
 ok "Service scan complete -> ${OUT}.nmap  (XML: ${OUT}.xml)"
@@ -102,7 +102,7 @@ UDP_PORTS="${UDP_PORTS:-53,123,161}"
 if [[ "${SKIP_UDP:-0}" != "1" ]]; then
   UDP_OUT="$RESULTS_DIR/services_udp_${STAMP}"
   log "UDP sweep on ports $UDP_PORTS (DNS/NTP/SNMP)..."
-  sudo nmap -sU -sV -T4 --open -p "$UDP_PORTS" \
+  sudo /usr/local/sbin/soc-nmap -sU -sV -T4 --open -p "$UDP_PORTS" \
        -oA "$UDP_OUT" "${TARGET_ARG[@]}" | tee "${UDP_OUT}.log"
   if command -v python3 >/dev/null 2>&1; then
     python3 "$SUITE_DIR/nmap_to_alerts.py" "${UDP_OUT}.xml" \

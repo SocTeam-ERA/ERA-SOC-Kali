@@ -905,6 +905,34 @@ def inner() -> int:
     snap3["computers"]["OLD10"] = comp("OLD10", "Windows 11 Pro", "10.0 (26200)")
     al3, st3 = AD.evaluate(snap3, st2, {}, d0)
     check("an upgraded PC leaves the unsupported list quietly", "OLD10" not in st3["unsupported"] and not al3, str(al3))
+    # sign-ins that should not happen: an account on leave, a dormant account (unused for STALE_DAYS)
+    sa = json.loads(json.dumps(snap3))
+    sa["users"]["dormant"] = usr("dormant", last="2025-01-10")
+    sa["users"]["oldadmin"] = usr("oldadmin", last="2025-02-01")
+    sa["privileged"]["Domain Admins"] = sa["privileged"]["Domain Admins"] + ["oldadmin"]
+    _, sta = AD.evaluate(sa, st3, {}, d0)
+    sb = json.loads(json.dumps(sa))
+    sb["users"]["lyndsay"]["last_logon"] = "2026-09-22T08:00:00+00:00"   # on leave, yet a new sign-in
+    sb["users"]["dormant"]["last_logon"] = "2026-09-21T08:00:00+00:00"   # 600 days without use, then used
+    sb["users"]["oldadmin"]["last_logon"] = "2026-09-21T09:00:00+00:00"
+    sb["users"]["ana"]["last_logon"] = "2026-09-23T08:00:00+00:00"       # a normal, active user signing in again
+    alb, stb = AD.evaluate(sb, sta, {}, d0, on_leave=["Lyndsay"])
+    byb = {x_["title"].split(":")[0]: [] for x_ in alb}
+    for x_ in alb:
+        byb[x_["title"].split(":")[0]].append((x_["user"], x_["severity"]))
+    check("a sign-in by an account on the on-leave watchlist is critical",
+          byb.get("Sign-in by an account on leave") == [("lyndsay", "critical")], str(byb))
+    check("a dormant account used again is medium, critical when it is privileged; an active user signing in is nothing",
+          sorted(byb.get("Dormant account used again", [])) == [("dormant", "medium"), ("oldadmin", "critical")]
+          and not any(u_ == "ana" for v_ in byb.values() for u_, _ in v_), str(byb))
+    alc, _ = AD.evaluate(sb, stb, {}, d0, on_leave=["lyndsay"])
+    check("...each sign-in alerts once", not alc, str([x_["title"] for x_ in alc]))
+    _, st_first = AD.evaluate(sb, {k_: v_ for k_, v_ in sta.items() if k_ != "last_logons"}, {}, d0, on_leave=["lyndsay"])
+    check("...and the first run after the upgrade only records the dates",
+          "last_logons" in st_first and not [x_ for x_ in AD.evaluate(sb, {k_: v_ for k_, v_ in sta.items()
+                                                                            if k_ != "last_logons"}, {}, d0,
+                                                                           on_leave=["lyndsay"])[0]
+                                             if "Sign-in" in x_["title"] or "Dormant" in x_["title"]])
     many = json.loads(json.dumps(snap3))
     for i_ in range(AD.MAX_INDIVIDUAL_NEW + 5):
         many["computers"][f"BULK{i_}"] = comp(f"BULK{i_}", "Windows 11 Pro", "10.0 (26200)")
@@ -1066,8 +1094,9 @@ def inner() -> int:
     group("watchlists")
     import watchlists as W
     names = {w["name"] for w in W.list_watchlists()}
-    check("all eight watchlists are registered", names == {"trusted_ips", "bad_ips", "bad_domains", "bad_hashes",
-                                                           "dhcp_servers", "ra_sources", "sensitive_vlans", "untrusted_vlans"}, str(names))
+    check("all nine watchlists are registered", names == {"trusted_ips", "bad_ips", "bad_domains", "bad_hashes",
+                                                          "dhcp_servers", "ra_sources", "sensitive_vlans", "untrusted_vlans",
+                                                          "on_leave_accounts"}, str(names))
     before = W.get("trusted_ips")["count"]
     W.add("trusted_ips", "203.0.113.9/32", "selftest")
     check("adding a valid CIDR to a watchlist works", W.get("trusted_ips")["count"] == before + 1)
@@ -1452,8 +1481,9 @@ def inner() -> int:
         check("a read-only key cannot create a suppression", _call("/api/suppressions", "t-read", "POST", {"reason": "x"})[0] == 403)
 
         code, d = _call("/api/watchlists")
-        check("GET /api/watchlists lists all eight", code == 200 and {w["name"] for w in d["watchlists"]} ==
+        check("GET /api/watchlists lists all nine", code == 200 and {w["name"] for w in d["watchlists"]} ==
               {"trusted_ips", "bad_ips", "bad_domains", "bad_hashes", "dhcp_servers", "ra_sources", "sensitive_vlans",
+               "on_leave_accounts",
                "untrusted_vlans"})
         code, d = _call("/api/watchlists/trusted_ips")
         check("GET /api/watchlists/<name> serves one list", code == 200 and d["name"] == "trusted_ips")

@@ -58,6 +58,14 @@ def _hash(v: str) -> str:
     return v.lower()
 
 
+def _account(v: str) -> str:
+    """An AD sAMAccountName (lower-cased); a DOMAIN\\ prefix or @domain suffix is dropped."""
+    v = v.split("\\")[-1].split("@")[0].strip().lower()
+    if not re.fullmatch(r"[a-z0-9._$-]{1,64}", v):
+        raise ValueError(f"not an AD account name (sAMAccountName): {v!r}")
+    return v
+
+
 def _vlan_name(v: str) -> str:
     if not v or "/" in v or v.startswith("#"):
         raise ValueError(f"not a valid VLAN name: {v!r}")
@@ -125,6 +133,16 @@ REGISTRY: Dict[str, Dict[str, Any]] = {
         "seed_header": "# VLANs that should never be able to reach a sensitive VLAN.\n"
                        "# One VLAN name per line, must match the VLAN names in kali/5_vlan_segmentation_test.sh.\n",
         "seed": ["Guest-Employee-WiFi"],
+    },
+    "on_leave_accounts": {
+        "path": DATA_DIR / "watchlists" / "on_leave_accounts.txt",
+        "description": "AD accounts of people who are away (leave, long absence). Any new sign-in raises a critical "
+                       "alert (ad_inventory.py): nobody should be using them.",
+        "used_by": ["ad_inventory"],
+        "validate": _account,
+        "seed_header": "# AD accounts (sAMAccountName) of people on leave: any sign-in raises a critical alert.\n"
+                       "# Add a comment line above each with who, why and until when; remove the entry when they return.\n",
+        "seed": [],
     },
 }
 

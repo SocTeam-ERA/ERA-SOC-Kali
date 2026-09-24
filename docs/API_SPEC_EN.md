@@ -172,7 +172,7 @@ Incident fields: `id`, `number`, `title`, `severity` (`medium\|critical`), `stat
 |---|---|
 | `/api/assets` | `vlan` (optional). Devices seen on the network (ARP scan), keyed by MAC: `ip`, `vendor`, `cidr`, `first_seen`, `last_seen`, `seen_count`, `owner`, `notes`, `authorized`, `scan_facts` (OS, Windows build, SMB signing), `software` |
 | `/api/suppressions` | `{"count", "rules": [{id, source, reason, added_by, added, expires, expired, allow_critical, match, hits_total, hits_24h}], "errors"}` |
-| `/api/watchlists` | `{"watchlists": [{name, description, used_by, count, entries}]}`. The names are `trusted_ips`, `bad_ips`, `bad_domains`, `bad_hashes`, `dhcp_servers`, `ra_sources`, `sensitive_vlans`, `untrusted_vlans` |
+| `/api/watchlists` | `{"watchlists": [{name, description, used_by, count, entries}]}`. The names are `trusted_ips`, `bad_ips`, `bad_domains`, `bad_hashes`, `dhcp_servers`, `ra_sources`, `sensitive_vlans`, `untrusted_vlans`, `on_leave_accounts` (AD accounts of people away: any sign-in is a critical alert) |
 | `/api/watchlists/<name>` | One list |
 | `/api/playbooks` | Automatic responses: `{playbooks: [{id, name, enabled, dry_run, cooldown_minutes, trigger, actions, last_run, runs_24h, errors_24h}], errors, dry_run_all}` |
 | `/api/playbooks/runs` | `limit` (default 50, max 200). Recent runs |

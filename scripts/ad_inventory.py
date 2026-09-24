@@ -27,6 +27,8 @@ view hides the rest, since its backend maps the Kali's "normal" to "low".
     alert when new ones join the list);
   * a Windows machine the network scan found that is NOT in the domain (medium): nobody
     joined it, so nobody manages or patches it;
+  * a sign-in by an account on the on-leave watchlist (critical), or by a dormant account (unused for
+    STALE_DAYS; medium, critical when privileged);
   * the AD read failing, and recovering;
   * (not an alert) one line per day of headline numbers in data/ad_history.jsonl, for trends;
   * the domain weaknesses of scripts/ad_risks.py (Kerberoastable accounts, no lockout, missing
@@ -357,7 +359,7 @@ def privileged_changes(before: Dict[str, List[str]], now: Dict[str, List[str]]) 
 
 
 def evaluate(snap: Dict[str, Any], state: Dict[str, Any], network_hosts: Dict[str, str], today: date,
-             ignore_not_in_domain: List[str] = ()) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+             ignore_not_in_domain: List[str] = (), on_leave: Any = ()) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """(alert kwargs, new state)."""
     alerts: List[Dict[str, Any]] = []
     first_run = not state.get("computers")
@@ -468,6 +470,44 @@ def evaluate(snap: Dict[str, Any], state: Dict[str, Any], network_hosts: Dict[st
                          "(config/ad_inventory.json not_in_domain_ignore)."),
             details={"computer": name, "ip": ip})
 
+    # ---- accounts that should not be signing in: on leave (watchlist), or dormant and suddenly used ------
+    # AD's lastLogonTimestamp moves on only every 9-14 days, so this sees a sign-in late; it also moves on
+    # for some non-interactive uses (a service or a mapped drive using the account). The first run records
+    # the dates silently.
+    leave = {str(x).lower() for x in on_leave}
+    all_priv = {m.lower() for ms in priv.values() for m in ms}
+    before_ll = state.get("last_logons")
+    now_ll = {k: u.get("last_logon") for k, u in users.items()}
+    if before_ll is not None:
+        for k, u in sorted(users.items()):
+            new, old = now_ll.get(k), before_ll.get(k)
+            if k not in before_ll or not new or (old and new <= old):
+                continue
+            who = f"{u['sam']}" + (f" ({u.get('display')})" if u.get("display") else "")
+            if k in leave:
+                add(type="intrusion", severity="critical", title=f"Sign-in by an account on leave: {who}", user=u["sam"],
+                    description=(f"{who} is on the on-leave watchlist, yet AD recorded a new sign-in ({new[:10]}; before: "
+                                 f"{(old or 'never')[:10]}). Confirm with the person or their manager. If nobody used it on "
+                                 "purpose, disable the account and reset its password. (AD updates this date only every "
+                                 "9-14 days, and some background uses also move it.)"),
+                    details={"account": u["sam"], "last_logon": new, "previous_last_logon": old, "reason": "on_leave"})
+                continue
+            gap = None
+            if old:
+                gap = (datetime.fromisoformat(new) - datetime.fromisoformat(old)).days
+            elif u.get("created"):
+                gap = (datetime.fromisoformat(new) - datetime.fromisoformat(u["created"])).days
+            if gap is None or gap <= STALE_DAYS:
+                continue
+            add(type="intrusion", severity="critical" if k in all_priv else "medium",
+                title=f"Dormant account used again: {who}", user=u["sam"],
+                description=(f"{who} signed in ({new[:10]}) after {gap} days without use"
+                             + (" -- its first sign-in ever" if not old else "") + ". Unused accounts are a favourite of "
+                             "attackers because nobody notices them. Confirm the person is back"
+                             + (". It is a privileged account." if k in all_priv else ".")),
+                details={"account": u["sam"], "last_logon": new, "previous_last_logon": old, "days_unused": gap,
+                         "reason": "dormant"})
+
     # ---- domain weaknesses (ad_risks.py): alert when a weakness appears or gains accounts, note when it is fixed ----
     before_risks: Dict[str, List[str]] = state.get("risks", {})
     now_risks = {r["id"]: r["accounts"] for r in snap.get("risks", [])}
@@ -486,6 +526,7 @@ def evaluate(snap: Dict[str, Any], state: Dict[str, Any], network_hosts: Dict[st
 
     new_state = {
         "computers": sorted(comps), "users": sorted(users), "privileged": priv, "risks": now_risks,
+        "last_logons": now_ll,
         "unsupported": now_unsupported,
         "ending_soon": sorted(alerted_ending | set(ending)),
         "stale_computers": stale["computers"], "stale_users": stale["users"],
@@ -593,7 +634,9 @@ def run(dry_run: bool = False) -> int:
             return _failure(state, f"read looks incomplete: {len(snap['computers'])} computers (was {before})", dry_run)
 
         ignore = _load_json(CONFIG_FILE, {}).get("not_in_domain_ignore", [])
-        alerts, new_state = evaluate(snap, state, network_windows_hosts(), today, ignore)
+        import watchlists
+        on_leave = watchlists.get("on_leave_accounts")["entries"]
+        alerts, new_state = evaluate(snap, state, network_windows_hosts(), today, ignore, on_leave)
         alerts += change_kw
         new_state["changes"] = changes
 

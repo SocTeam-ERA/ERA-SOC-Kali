@@ -42,7 +42,7 @@ NTFY_SERVICES="soc-aide-check soc-check-updates soc-login soc-chkrootkit-forward
   soc-suricata-forwarder soc-vlan-segmentation soc-ad-inventory soc-ad-privileged soc-l2-watch soc-poisoner-canary soc-cert-expiry"
 
 changed="$(cd "$SUITE/scripts" && python3 -c 'import deploy_drift as d
-print(" ".join(n for k, n in d.drift(check_crontab=False) if k == "changed"))')"
+print(" ".join(n for k, n in d.drift(check_crontab=False, check_firewall=False) if k == "changed"))')"
 if [[ -n "$changed" && $FORCE -eq 0 ]]; then
   echo "[!] edited on this machine but not in deploy/: $changed"
   echo "    Installing would undo those edits. Copy them into deploy/ and commit, or re-run with --force."

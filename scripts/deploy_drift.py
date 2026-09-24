@@ -26,6 +26,8 @@ Problems reported (each one names the file):
   not installed  deploy/ has a unit or drop-in that is not installed
   crontab        the user crontab differs from deploy/crontab.txt
   secret         a file in deploy/ carries a value for NTFY_TOPIC
+  firewall       the live ufw rules differ from deploy/firewall/ufw-status.txt (read through a read-only
+                 sudo rule; rules are never applied automatically)
 
 Secrets never live in deploy/: the ntfy topic goes in a private drop-in
 (<unit>.service.d/ntfy.conf, mode 600), so ntfy.conf drop-ins are skipped and
@@ -35,7 +37,8 @@ Comments, blank lines and surrounding whitespace are ignored too.
 soc_selftest.py runs this every day (live part), so a unit added in /etc and
 forgotten here raises an alert the next morning.
 
-    python3 deploy_drift.py          list the problems; exit 1 if there are any
+    python3 deploy_drift.py                    list the problems; exit 1 if there are any
+    python3 deploy_drift.py --save-firewall    record the live firewall in deploy/firewall/ufw-status.txt
 """
 from __future__ import annotations
 
@@ -110,6 +113,42 @@ def _committed_versions(repo: Path, name: str) -> list[list[str]]:
         return []
 
 
+FIREWALL_FILE = REPO / "firewall" / "ufw-status.txt"
+FIREWALL_HEADER = """# The Kali's firewall as it should be: the output of 'sudo ufw status verbose'.
+# scripts/deploy_drift.py (run daily by the self-test) compares it with the live firewall and reports any
+# difference. Rules are NOT applied automatically (a wrong rule could lock everyone out): change the
+# firewall with ufw by hand, then record the new state with
+#     python3 /opt/sentinel-soc/scripts/deploy_drift.py --save-firewall
+# and commit. Lines starting with # are ignored when comparing.
+#
+"""
+
+
+def live_firewall() -> str | None:
+    """'ufw status verbose' through the read-only sudo rule (deploy/sudoers/soc-ufw-status); None when
+    that rule is not installed or ufw is missing."""
+    try:
+        r = subprocess.run(["sudo", "-n", "/usr/sbin/ufw", "status", "verbose"], capture_output=True, text=True,
+                           timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return r.stdout if r.returncode == 0 and r.stdout.startswith("Status:") else None
+
+
+def firewall_drift(repo: Path = REPO, live: str | None = None) -> list[tuple[str, str]]:
+    """[("firewall", "firewall/ufw-status.txt")] when the live firewall differs from deploy/firewall/, or
+    [("firewall outdated", ...)] when it equals an earlier committed version (deploy/ has rules not applied
+    yet). [] when they match or the firewall cannot be read."""
+    want = repo / "firewall" / "ufw-status.txt"
+    if not want.exists():
+        return []
+    live = live_firewall() if live is None else live
+    if live is None or normalize(live) == normalize(_read(want) or ""):
+        return []
+    name = "firewall/ufw-status.txt"
+    return [("firewall outdated" if normalize(live) in _committed_versions(repo, name) else "firewall", name)]
+
+
 def sensor_drift(repo: Path = REPO, root: Path = Path("/")) -> list[tuple[str, str]]:
     """[(kind, "sensors/<path>")] for each file of repo/sensors/ that differs from root/<path>. A file this
     user cannot read is skipped rather than reported (the daily self-test runs unprivileged)."""
@@ -132,9 +171,12 @@ def sensor_drift(repo: Path = REPO, root: Path = Path("/")) -> list[tuple[str, s
 
 
 def drift(repo: Path = REPO, live: Path = LIVE, crontab: str | None = None,
-          check_crontab: bool = True, sensors_root: Path | None = Path("/")) -> list[tuple[str, str]]:
+          check_crontab: bool = True, sensors_root: Path | None = Path("/"),
+          check_firewall: bool = True) -> list[tuple[str, str]]:
     """[(kind, name)] of every way deploy/ and this machine disagree; [] when they match."""
     problems = []
+    if check_firewall:
+        problems += firewall_drift(repo)
     if sensors_root is not None:
         problems += sensor_drift(repo, sensors_root)
     have, want = _units(live), _units(repo)
@@ -165,11 +207,24 @@ EXPLAIN = {
     "outdated": "an earlier version from deploy/ is installed: run sudo deploy/install_all.sh",
     "not installed": "in deploy/ but not installed: run sudo deploy/install_all.sh",
     "crontab": "the crontab differs from deploy/crontab.txt: crontab -l > deploy/crontab.txt, or install that file",
+    "firewall": ("the live firewall (ufw) differs from deploy/firewall/ufw-status.txt: someone changed a rule. If it "
+                 "was intended, record it (deploy_drift.py --save-firewall) and commit; if not, undo it"),
+    "firewall outdated": ("deploy/firewall/ has rules that are not applied yet: apply them with ufw by hand "
+                          "(not automatic, to avoid locking anyone out)"),
     "secret": "carries the ntfy topic: remove the value, it belongs in a private ntfy.conf drop-in",
 }
 
 
 def main() -> int:
+    if "--save-firewall" in sys.argv:
+        live = live_firewall()
+        if live is None:
+            print("cannot read the firewall: is deploy/sudoers/soc-ufw-status installed?")
+            return 1
+        FIREWALL_FILE.parent.mkdir(parents=True, exist_ok=True)
+        FIREWALL_FILE.write_text(FIREWALL_HEADER + live)
+        print(f"saved {FIREWALL_FILE}; review with git diff, then commit")
+        return 0
     problems = drift()
     for kind, name in problems:
         print(f"{kind:14} {name}   -- {EXPLAIN[kind]}")

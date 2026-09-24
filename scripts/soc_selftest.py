@@ -1768,6 +1768,17 @@ def inner() -> int:
           DD.sensor_drift(gr / "deploy", sroot) == [("changed", "sensors/opt/zeek/site/local.zeek")],
           str(DD.sensor_drift(gr / "deploy", sroot)))
     (sroot / "opt" / "zeek" / "site" / "local.zeek").unlink()
+    fw_ok = "Status: active\nDefault: deny (incoming)\n\n22/tcp ALLOW IN 10.100.0.0/24 # SSH admin\n"
+    (gr / "deploy" / "firewall").mkdir()
+    (gr / "deploy" / "firewall" / "ufw-status.txt").write_text("# header\n" + fw_ok)
+    check("a live firewall equal to deploy/firewall/ (header and blank lines aside) is not drift",
+          DD.firewall_drift(gr / "deploy", live=fw_ok.replace("\n\n", "\n")) == [])
+    check("a rule added by hand on the machine is reported as firewall drift",
+          DD.firewall_drift(gr / "deploy", live=fw_ok + "3389/tcp ALLOW IN Anywhere\n")
+          == [("firewall", "firewall/ufw-status.txt")])
+    check("...and the installer's own check ignores the firewall (it is never applied automatically)",
+          all(k_ != "firewall" for k_, _ in DD.drift(gr / "deploy", gl, check_crontab=False, sensors_root=None,
+                                                    check_firewall=False)))
     check("...and one that is not on the machine at all as not installed",
           DD.sensor_drift(gr / "deploy", sroot) == [("not installed", "sensors/opt/zeek/site/local.zeek")])
 

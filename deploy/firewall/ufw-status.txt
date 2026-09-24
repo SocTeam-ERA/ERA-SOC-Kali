@@ -1,0 +1,27 @@
+# The Kali's firewall as it should be: the output of 'sudo ufw status verbose'.
+# scripts/deploy_drift.py (run daily by the self-test) compares it with the live firewall and reports any
+# difference. Rules are NOT applied automatically (a wrong rule could lock everyone out): change the
+# firewall with ufw by hand, then record the new state with
+#     python3 /opt/sentinel-soc/scripts/deploy_drift.py --save-firewall
+# and commit. Lines starting with # are ignored when comparing.
+#
+Status: active
+Logging: on (low)
+Default: deny (incoming), allow (outgoing), disabled (routed)
+New profiles: skip
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW IN    10.100.0.0/24              # SSH admin via WireGuard
+8080/tcp                   ALLOW IN    10.69.0.80                 # SOC API - backend
+8080/tcp                   ALLOW IN    10.100.0.0/24              # SOC API - admin VPN
+3389/tcp                   ALLOW IN    10.100.0.0/24              # RDP (xrdp) admin via WireGuard
+22/tcp                     ALLOW IN    10.69.0.0/24              
+22/tcp                     ALLOW IN    10.69.20.178               # SSH PC adelcueto cable
+22/tcp                     ALLOW IN    10.69.11.107               # SSH PC adelcueto wifi
+3389/tcp                   ALLOW IN    10.69.20.178               # RDP PC adelcueto cable
+3389/tcp                   ALLOW IN    10.69.11.107               # RDP PC adelcueto wifi
+22/tcp                     ALLOW IN    10.69.0.0/16              
+3389/tcp                   ALLOW IN    10.69.0.0/16              
+8443/tcp                   ALLOW IN    10.69.0.80                 # Kali API HTTPS for the SOC backend
+

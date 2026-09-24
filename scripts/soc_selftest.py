@@ -1794,13 +1794,15 @@ def inner() -> int:
     wrap = SUITE / "deploy" / "bin" / "soc-nmap"
     nres = tmp / "nmap_results"
     nres.mkdir()
-    (nres / "t.txt").write_text("127.0.0.1\n# a comment\n")
+    (nres / "_targets_20260924.txt").write_text("127.0.0.1\n# a comment\n")   # named like the scans' own lists
     wenv = dict(os.environ, SOC_NMAP_RESULTS=str(nres))
     wrun = lambda *a: subprocess.run([sys.executable, "-I", str(wrap), *a], env=wenv, capture_output=True,  # noqa: E731
                                      text=True, timeout=60)
-    r = wrun("-sn", "-oA", str(nres / "ok"), "-iL", str(nres / "t.txt"))
+    (nres / "_vulnbatches_1").mkdir()
+    r = wrun("-sn", "-oA", str(nres / "_vulnbatches_1" / "vuln_1"), "-iL", str(nres / "_targets_20260924.txt"))
     check("an allowed scan runs, with its target list and its output inside the results directory",
-          r.returncode == 0 and (nres / "ok.xml").exists() and "127.0.0.1" in (nres / "ok.xml").read_text(), r.stderr)
+          r.returncode == 0 and (nres / "_vulnbatches_1" / "vuln_1.xml").exists()
+          and "127.0.0.1" in (nres / "_vulnbatches_1" / "vuln_1.xml").read_text(), r.stderr)
     (nres / "shadow.txt").symlink_to("/etc/shadow")
     attacks = [["--script", "/tmp/x.nse", "127.0.0.1"], ["--script-args", "x=1", "127.0.0.1"],
                ["-oA", "/etc/cron.d/x", "127.0.0.1"], ["-iL", "/etc/shadow"], ["-iL", str(nres / "shadow.txt")],

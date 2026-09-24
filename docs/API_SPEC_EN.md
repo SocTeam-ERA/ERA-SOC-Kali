@@ -177,6 +177,22 @@ Incident fields: `id`, `number`, `title`, `severity` (`medium\|critical`), `stat
 | `/api/playbooks` | Automatic responses: `{playbooks: [{id, name, enabled, dry_run, cooldown_minutes, trigger, actions, last_run, runs_24h, errors_24h}], errors, dry_run_all}` |
 | `/api/playbooks/runs` | `limit` (default 50, max 200). Recent runs |
 
+### 3.6 Active Directory
+
+From the daily AD inventory (`scripts/ad_inventory.py`, 06:40; privileged groups every 15 minutes). No
+LDAP call per request. Every path answers 404 `no Active Directory inventory yet` until the first
+inventory exists. A computer's or user's `status` is `active`, `stale` (enabled, but no sign-in for 90
+days) or `disabled`; the alerts use the same rules.
+
+| Path | Parameters | Returns |
+|---|---|---|
+| `/api/ad/summary` | none | `as_of`, `server`, `mode`, `computers` and `users` (`total`, `active`, `stale`, `disabled`), `privileged` (`{group: [{sam, display, status, last_logon}]}`), `windows_support` (`unsupported` and `ending_soon`: active computers), `not_in_domain` (`[{name, ip, last_seen, mac}]`: Windows machines on the network that AD does not know), `risks` (the domain weaknesses: `[{id, severity, title, description, accounts}]`), `domain_policy` (`min_length`, `lockout_threshold`, `max_age_days`, `history`) |
+| `/api/ad/computers` | `status`, `ou` (prefix, e.g. `Calgary/Accounting`), `support` (`unsupported\|ending_soon\|supported`), `q` (name, DNS, OS or OU) | `{"count", "computers": [{name, dns, os, os_version, build, enabled, last_logon, created, ou, support: {release, track, ends, status, days_left}, status, network: {ip, last_seen, mac} or null}]}`. `network` is where the Kali's scan last saw the machine |
+| `/api/ad/users` | `status`, `ou`, `q` (account or display name), `privileged=1` | `{"count", "users": [{sam, display, enabled, last_logon, created, ou, status, privileged_groups}]}` |
+| `/api/ad/history` | `days` (default 90, max 730) | `{"count", "days": [{date, computers, users, privileged, privileged_accounts, os_unsupported, os_ending_soon, not_in_domain, risks, risks_by_severity}]}`, oldest first: for trend charts |
+
+`last_logon` is AD's `lastLogonTimestamp`, which AD updates only every 9 to 14 days. Treat it as approximate.
+
 ---
 
 ## 4. Write endpoints (`write` key)
@@ -242,7 +258,7 @@ can gate them by platform role:
 
 | Platform role | Kali endpoints |
 |---|---|
-| viewer | Every `GET` in §3 except `/api/search` and `/api/alerts/<id>/pcap` |
+| viewer | Every `GET` in §3 except `/api/search`, `/api/alerts/<id>/pcap` and `/api/ad/users` (staff names and account status) |
 | analyst | Everything above, plus search, pcap download and the §4 writes on alerts, incidents and asset notes |
 | admin | Everything, including suppressions and watchlists |
 

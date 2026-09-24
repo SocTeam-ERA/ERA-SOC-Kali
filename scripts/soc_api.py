@@ -37,6 +37,7 @@ import soc_activity
 import soc_graph
 import mitre_matrix
 import weekly_report
+import ad_views
  
 HOST = os.environ.get("SOC_API_HOST", "0.0.0.0")
 PORT = int(os.environ.get("SOC_API_PORT", "8080"))
@@ -245,6 +246,35 @@ class Handler(BaseHTTPRequestHandler):
             if detail is None:
                 return self._send(404, {"error": "entity not found (use type:value, e.g. mac:aa:bb:cc:dd:ee:ff or ip:10.0.0.5)"})
             return self._send(200, detail)
+        if path.startswith("/api/ad/"):
+            # Active Directory, from the daily inventory (ad_inventory.py); see ad_views.py
+            sub = path[len("/api/ad/"):]
+            q1 = lambda k: (qs.get(k) or [None])[0]  # noqa: E731
+            status = q1("status")
+            if status and status not in ad_views.STATUSES:
+                return self._send(400, {"error": f"unknown status {status!r}", "hint": f"one of {list(ad_views.STATUSES)}"})
+            if sub == "summary":
+                data = ad_views.summary()
+            elif sub == "computers":
+                rows = ad_views.computers(status=status, ou=q1("ou"), q=q1("q"), support=q1("support"))
+                data = None if rows is None else {"count": len(rows), "computers": rows}
+            elif sub == "users":
+                rows = ad_views.users(status=status, ou=q1("ou"), q=q1("q"),
+                                      privileged=q1("privileged") in ("1", "true", "yes"))
+                data = None if rows is None else {"count": len(rows), "users": rows}
+            elif sub == "history":
+                try:
+                    days = min(max(int(q1("days") or 90), 1), 730)
+                except ValueError:
+                    return self._send(400, {"error": "days must be an integer"})
+                rows = ad_views.history(days)
+                return self._send(200, {"count": len(rows), "days": rows})
+            else:
+                return self._send(404, {"error": "not found", "path": path})
+            if data is None:
+                return self._send(404, {"error": "no Active Directory inventory yet",
+                                        "hint": "ad_inventory.py writes it daily (soc-ad-inventory.timer)"})
+            return self._send(200, data)
         if path == "/api/metrics":
             return self._send(200, soc_views.metrics())
         if path == "/api/sources":
@@ -510,6 +540,7 @@ def main():
     print("[*] Endpoints: /api/health  /api/summary  /api/alerts  /api/alerts/<id>  /api/hosts  /api/assets")
     print("[*] Also:      /api/incidents  /api/incidents/<id|number>  /api/entities  /api/entities/<type:value>  /api/metrics  /api/sources  /api/detections  /api/mitre  /api/reports  /api/reports/weekly  /api/watchlists  /api/watchlists/<name>")
     print("[*] Automation: GET /api/playbooks  GET /api/playbooks/runs")
+    print("[*] AD:        GET /api/ad/summary  /api/ad/computers  /api/ad/users  /api/ad/history")
     print("[*] Search:    GET /api/search?source=alerts|suricata|zeek:<log>&q=...&since=1h&limit=100   GET /api/search/sources")
     print("[*] Suppress:  /api/suppressions  POST /api/suppressions/preview  POST /api/suppressions  DELETE /api/suppressions/<id>")
     print("[*] Write:     POST /api/incidents/<id|number>  {\"status\": \"new|active|closed\", \"classification\": \"true_positive|false_positive|benign|undetermined\", \"owner\": \"...\", \"comment\": \"...\"}")

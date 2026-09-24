@@ -1359,6 +1359,20 @@ def inner() -> int:
         check("status_since returns an alert whose status just changed, with who, when and why",
               code == 200 and got_ is not None and got_["status"] == "acknowledged" and got_["status_actor"] == "writer"
               and got_["status_note"] == "looking" and got_.get("status_updated", "") >= mark, str(got_))
+        # AD views (the inventory written by the "ad inventory" group above: OLDPC and jdoe, a Domain Admin)
+        code, d = _call("/api/ad/summary")
+        check("GET /api/ad/summary serves counts by status, the privileged members and the policy",
+              code == 200 and d["computers"]["total"] == 1 and d["privileged"]["Domain Admins"][0]["sam"] == "jdoe",
+              str(d)[:300])
+        code, d = _call("/api/ad/users?privileged=1")
+        check("GET /api/ad/users?privileged=1 lists the admins with their groups",
+              code == 200 and [u["sam"] for u in d["users"]] == ["jdoe"] and d["users"][0]["privileged_groups"])
+        code, d = _call("/api/ad/computers?q=oldpc")
+        check("GET /api/ad/computers finds a computer, with its status and Windows support",
+              code == 200 and d["count"] == 1 and d["computers"][0]["status"] in ("active", "stale")
+              and d["computers"][0]["support"]["status"] == "unsupported", str(d)[:300])
+        check("an unknown AD status is a 400, and GET /api/ad/history answers",
+              _call("/api/ad/computers?status=bogus")[0] == 400 and _call("/api/ad/history")[0] == 200)
         code, d = _call("/api/alerts?status_since=2999-01-01T00:00:00Z")
         check("...and nothing for changes that have not happened", code == 200 and d["count"] == 0)
         _call(f"/api/alerts/{sync_id}/status", "t-write", "POST", {"status": "open"})

@@ -171,6 +171,31 @@ def check_timers() -> None:
         check(OK if state == "enabled" else FAIL, f"{t}: {state}")
 
 
+def check_geoip() -> None:
+    """Alert geolocation used to be a silent no-op for two weeks because its database was never installed."""
+    try:
+        import geoip_enrich
+        st = geoip_enrich.status()
+    except Exception as e:  # noqa: BLE001
+        check(WARN, f"geolocation: could not check ({type(e).__name__}: {e})")
+        return
+    if not st["available"]:
+        check(WARN, f"geolocation: no GeoLite2 database ({st['country']['path']}, {st['city']['path']}), so alerts "
+                    "carry no location")
+        return
+    age = lambda d: (datetime.now(timezone.utc).date() - datetime.fromisoformat(d["built"]).date()).days if d["built"] else None
+    cn, ct = st["country"], st["city"]
+    if not cn["available"]:
+        check(WARN, f"geolocation: only the City database (built {ct['built']}) is available; no Country database")
+    elif age(cn) is not None and age(cn) > 400:
+        check(WARN, f"geolocation: Country database built {cn['built']} is over a year old")
+    else:
+        old_city = ct["available"] and age(ct) is not None and age(ct) > 730
+        check(OK, f"geolocation: country from the database built {cn['built']}"
+                  + (f"; city and coordinates from one built {ct['built']}, used only when it agrees on the country"
+                     if old_city else ("" if ct["available"] else "; no City database, so no city or coordinates")))
+
+
 def check_disk() -> None:
     total, used, free = shutil.disk_usage(CHECK_PATH)
     pct = 100 * used / total
@@ -329,6 +354,7 @@ def main() -> int:
         ("services", check_services),
         ("service code freshness", check_code_freshness),
         ("timers", check_timers),
+        ("geolocation", check_geoip),
         ("disk space", check_disk),
         ("last scheduled scan", check_last_scan),
         ("suppression rules", check_suppressions),

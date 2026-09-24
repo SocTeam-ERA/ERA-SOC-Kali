@@ -1494,6 +1494,62 @@ def inner() -> int:
           "selftest-ancient" not in {r["actor"] for r in soc_activity.feed(since="1h", limit=500)}
           and "selftest-ancient" in {r["actor"] for r in soc_activity.feed(limit=500)})
 
+    # ---- (added) alert geolocation: two databases, country from the newer one ------------------------
+    group("geolocation")
+    import geoip_enrich as GE
+    from types import SimpleNamespace as NS
+
+    class FakeCountry:
+        def __init__(self, table): self.table = table
+        def country(self, ip):
+            if ip not in self.table: raise KeyError(ip)
+            return NS(country=NS(iso_code=self.table[ip][0], name=self.table[ip][1]))
+
+    class FakeCity:
+        def __init__(self, table): self.table = table
+        def city(self, ip):
+            if ip not in self.table: raise KeyError(ip)
+            cc, nm, city, lat, lon = self.table[ip]
+            return NS(country=NS(iso_code=cc, name=nm), city=NS(name=city), location=NS(latitude=lat, longitude=lon))
+    saved_readers = dict(GE._readers)
+    GE._next_try.update(city=1e18, country=1e18)          # do not go looking for the real database files
+    try:
+        GE._readers["country"] = FakeCountry({"5.5.5.5": ("DE", "Germany"), "5.5.5.6": ("NL", "Netherlands"),
+                                              "5.5.5.7": ("RU", "Russia")})
+        GE._readers["city"] = FakeCity({"5.5.5.5": ("DE", "Germany", "Berlin", 52.5, 13.4),
+                                        "5.5.5.6": ("HK", "Hong Kong", "Kowloon", 22.3, 114.2),
+                                        "5.5.5.8": ("US", "United States", None, 37.0, -95.0)})
+        g = GE.geolocate("5.5.5.5")
+        check("country from the country database, city and coordinates added when the city database agrees",
+              g == {"country_code": "DE", "country": "Germany", "city": "Berlin", "lat": 52.5, "lon": 13.4, "precision": "city"}, str(g))
+        g = GE.geolocate("5.5.5.6")
+        check("when the old city database disagrees on the country, its city and coordinates are dropped (never contradicts)",
+              g == {"country_code": "NL", "country": "Netherlands", "precision": "country"}, str(g))
+        check("a block only the newer country database knows still gets a country",
+              GE.geolocate("5.5.5.7") == {"country_code": "RU", "country": "Russia", "precision": "country"})
+        g = GE.geolocate("5.5.5.8")
+        check("an address only the city database knows falls back to it, and no city name means precision 'country'",
+              g and g["country_code"] == "US" and g["precision"] == "country" and "city" not in g, str(g))
+        check("private, loopback and unknown addresses give nothing",
+              GE.geolocate("192.168.1.1") is None and GE.geolocate("127.0.0.1") is None and GE.geolocate("5.5.5.99") is None
+              and GE.geolocate(None) is None)
+        n = len(feed())
+        soc_core.emit_alert(soc_core.Alert(type="intrusion", severity="normal", title="Geo probe (selftest)", detector="selftest",
+                                           source_ip="5.5.5.5", description="x"), echo=False)
+        a = find(new_alerts(n), "Geo probe (selftest)")
+        check("a real alert from a public IP carries details.geo through emit_alert",
+              a is not None and a["details"].get("geo", {}).get("country_code") == "DE")
+        n = len(feed())
+        soc_core.emit_alert(soc_core.Alert(type="intrusion", severity="normal", title="Geo probe private (selftest)",
+                                           detector="selftest", source_ip="10.1.2.3", description="x"), echo=False)
+        check("...and an internal IP carries none", "geo" not in find(new_alerts(n), "Geo probe private (selftest)")["details"])
+        GE._readers.update(country=None, city=None)
+        check("with no database at all it is a quiet no-op (and the doctor's status says so)",
+              GE.geolocate("5.5.5.5") is None and GE.status()["available"] is False)
+    finally:
+        GE._readers.update(saved_readers)
+        GE._next_try.update(city=0.0, country=0.0)
+
     # ---- (added) ATT&CK coverage matrix and the weekly executive report ------------------------------
     group("mitre matrix")
     import mitre_matrix as MM

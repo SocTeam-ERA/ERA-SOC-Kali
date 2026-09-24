@@ -68,7 +68,8 @@ Every error is JSON: `{"error": "<message>", "hint": "<optional>"}`.
   "status_updated": "…",        // only after a status change
   "status_actor": "jdoe",       // who changed it (the API key's user, or "auto-aging", "selftest"…)
   "status_note": "…",           // why; absent when the last change had no note
-  "test": true,                 // only on synthetic alerts: keep them out of real views
+  "test": true,                 // only on synthetic alerts: keep them out of real views. The detectors
+                                // manual_test, test and debug_test are always synthetic too
   "details": { … }              // free-form, see below
 }
 ```
@@ -79,6 +80,8 @@ and up, so anything a person must see is raised as at least `medium`.
 
 ### `details`: the fields a consumer can rely on
 
+Not from the Kali: `details.corroborated` (several detectors, same IP, same window), `details.threat` (the backend's hosting heuristic) and `details.kali_id` / `ingest_via` are added by the platform backend (ERA-SOC `common/`), never sent by this API.
+
 `details` is free-form: each detector adds its own keys. These ones are common to many detectors and
 have a stable shape:
 
@@ -88,8 +91,8 @@ have a stable shape:
 | `identity` | `{"as_of", "computers": [{name, in_domain, ou, os, build, enabled, last_logon, os_support, os_support_ends, ip}], "users": [{sam, name, ou, enabled, last_logon, privileged_groups}]}` | Who and what the alert is about, according to Active Directory. Present only when something matched. `in_domain: false` means a Windows machine AD does not know |
 | `mitre` | `[{"technique", "name", "tactics": [...], "basis": "observed\|exposure"}]` | MITRE ATT&CK tags |
 | `incident_id`, `incident_number` | string, int | The incident this alert belongs to (§3.3) |
-| `geo` | `{country, region, city, asn, org…}` | For public IPs only |
-| `anonymizer`, `anonymizer_ip` | `{tor, vpn, proxy, datacenter, anonymized, type…}`, ip | Tor, VPN or hosting source |
+| `geo` | `{country_code, country, city?, lat?, lon?, precision: "city"\|"country"}` | For public IPs only (`geoip_enrich.py`). No ASN or organisation here: when known, the organisation is in `anonymizer.org` |
+| `anonymizer`, `anonymizer_ip` | `{tor, datacenter, anonymized, type, org?}` (`type`: e.g. `tor`, `vpn`, `hosting`, `unknown`), and the IP it describes | Tor, VPN or hosting source (`proxy_check.py`) |
 | `threat_intel` | `{"ip_matches": [{indicator, feed, role}], "kev": [{cve, …}]}` | Threat-feed hit, or a CVE in CISA KEV |
 | `pcap` | path on the Kali | A packet capture exists: download it with `GET /api/alerts/<id>/pcap` |
 | `source_role` | `actor\|asset` | Whether `source_ip` is the attacker (`actor`) or the scanned or affected machine (`asset`) |

@@ -511,6 +511,30 @@ def inner() -> int:
         check("it closes with a classification and keeps the comment", upd["status"] == "closed" and len(upd["comments"]) == 1)
         check("the change is attributed to who made it", upd["comments"][0]["by"] == "selftest")
 
+    # the rules that use what the Kali sees without a mirror port (config/correlation_rules.json)
+    import alert_match
+    rules_, _, _ = correlate.load_rules()
+    byid = {r_["id"]: r_ for r_ in rules_}
+    check("the four rules for new devices, the AD inventory and exposure load, with 7-day windows allowed",
+          {"unmanaged-windows-device", "new-device-exposes-services", "exposed-unpatched-host",
+           "unmanaged-host-scanning"} <= set(byid))
+    nd = byid.get("new-device-exposes-services", {}).get("steps", [{}])[0]
+    mt = lambda title, det: alert_match.matches(nd, {"title": title, "detector": det, "details": {}})  # noqa: E731
+    check("a new device (or a new open port) counts on Floor or Office, not on the Wiping VLAN, nor a randomized MAC",
+          mt("New device on VLAN 10.69.0.0/16: aa:bb:cc:dd:ee:ff (Dell Inc.)", "arp_discovery")
+          and mt("NEW open port 445/tcp (microsoft-ds) on 192.168.7.83", "kali_scan")
+          and not mt("New device on VLAN 10.21.0.0/16: aa:bb:cc:dd:ee:ff (Dell Inc.)", "arp_discovery")
+          and not mt("NEW open port 22/tcp (ssh) on 10.21.2.7", "kali_scan")
+          and not mt("New device on VLAN 10.69.0.0/16: f6:11:7b:0a:85:75 (Unknown) — likely randomized Wi-Fi MAC",
+                     "arp_discovery"))
+    try:
+        correlate._compile_rule({"id": "too-long", "name": "x", "severity": "medium", "type": "threshold", "count": 2,
+                                 "window_minutes": 20000, "match": {"detector": "x"}}, set())
+        too_long = False
+    except ValueError:
+        too_long = True
+    check("...and a window longer than 7 days is still refused", too_long)
+
     # ---- (added) investigation graph -------------------------------------------
     group("graph")
     import soc_graph

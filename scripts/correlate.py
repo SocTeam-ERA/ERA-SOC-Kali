@@ -116,8 +116,10 @@ def _compile_rule(raw: Any, seen: set) -> Dict[str, Any]:
 
     if rtype in ("sequence", "threshold"):
         w = raw.get("window_minutes")
-        if not isinstance(w, int) or isinstance(w, bool) or not 1 <= w <= 1440:
-            raise ValueError("window_minutes must be an integer between 1 and 1440")
+        # up to 7 days: the AD inventory runs daily, so a new device and "not in the domain" can be days apart.
+        # Only events that match some rule are kept (data/correlation_state.json), so a long window stays small.
+        if not isinstance(w, int) or isinstance(w, bool) or not 1 <= w <= 10080:
+            raise ValueError("window_minutes must be an integer between 1 and 10080 (7 days)")
         rule["window"] = w * 60
     if rtype == "sequence":
         steps = raw.get("steps")

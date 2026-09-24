@@ -112,6 +112,79 @@
           "threat_intel.kev"
         ]
       }
+    },
+    {
+      "id": "unmanaged-windows-device",
+      "name": "New device that is a Windows machine outside the domain",
+      "severity": "medium",
+      "type": "threshold",
+      "window_minutes": 10080,
+      "count": 2,
+      "distinct": "detector",
+      "match": {
+        "detector": [
+          "arp_discovery",
+          "ad_inventory"
+        ],
+        "title_regex": "^(New device on VLAN(?!.*randomized)|Windows host not in the domain)"
+      }
+    },
+    {
+      "id": "new-device-exposes-services",
+      "name": "New device that exposes network services",
+      "severity": "medium",
+      "type": "threshold",
+      "window_minutes": 1440,
+      "count": 2,
+      "distinct": "detector",
+      "match": {
+        "detector": [
+          "arp_discovery",
+          "kali_scan"
+        ],
+        "title_regex": "^(New device on VLAN (?!10\\.21\\.)(?!.*randomized)|NEW open port .* on (?!10\\.21\\.))"
+      }
+    },
+    {
+      "id": "exposed-unpatched-host",
+      "name": "Unsupported Windows that is also exposed on the network",
+      "severity": "medium",
+      "type": "threshold",
+      "window_minutes": 10080,
+      "count": 2,
+      "distinct": "title",
+      "match": {
+        "detector": [
+          "ad_inventory",
+          "kali_scan",
+          "traffic_capture"
+        ],
+        "title_regex": "^(Unsupported Windows|SMB signing not required|Cleartext protocol)"
+      }
+    },
+    {
+      "id": "unmanaged-host-scanning",
+      "name": "Unmanaged or new machine scanning the network",
+      "severity": "critical",
+      "type": "sequence",
+      "window_minutes": 10080,
+      "steps": [
+        {
+          "detector": [
+            "arp_discovery",
+            "ad_inventory"
+          ],
+          "title_regex": "^(New device on VLAN|\\d+ new device\\(s\\) on VLAN|Windows host not in the domain)"
+        },
+        {
+          "detector": [
+            "traffic_capture",
+            "suricata"
+          ],
+          "title_regex": "(^Port scan on the wire|^ET SCAN\\b)"
+        }
+      ]
     }
-  ]
+  ],
+  "_comment_2026_09_24": "The last four rules use what the Kali sees without a mirror port (new devices, the AD inventory, the scans, cleartext on the wire). The Wiping VLAN (10.21.0.0/16) is left out of new-device-exposes-services: racks come and go there all the time. Replayed against the history before enabling: correlate.py --replay."
 }

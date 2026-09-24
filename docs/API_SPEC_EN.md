@@ -80,6 +80,8 @@ and up, so anything a person must see is raised as at least `medium`.
 
 ### `details`: the fields a consumer can rely on
 
+Private addresses (10.x, 172.16-31.x, 192.168.x) never carry `geo` or `anonymizer`; that is expected, not an error. When `anonymizer.anonymized` is true, `geo` describes the exit node (Tor, VPN), not the real source: show it as unreliable.
+
 Not from the Kali: `details.corroborated` (several detectors, same IP, same window), `details.threat` (the backend's hosting heuristic) and `details.kali_id` / `ingest_via` are added by the platform backend (ERA-SOC `common/`), never sent by this API.
 
 `details` is free-form: each detector adds its own keys. These ones are common to many detectors and

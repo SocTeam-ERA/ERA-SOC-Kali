@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# NOTE (2026-09-24): superseded for rebuilding the SOC by deploy/install_packages.sh + deploy/install_all.sh;
+# the complete order is in docs/REBUILD_EN.md. Kept for its tshark/time-sync notes.
 # =====================================================================
 #  setup-kali-soc.sh — Provision a Kali host as the SOC scanning appliance
 # =====================================================================

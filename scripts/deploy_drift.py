@@ -28,6 +28,8 @@ Problems reported (each one names the file):
   secret         a file in deploy/ carries a value for NTFY_TOPIC
   unsafe         a helper sudo runs as root (deploy/bin/ -> /usr/local/sbin) is not root-owned or is writable
                  by others
+  package missing / package unlisted
+                 deploy/packages.txt (what install_packages.sh puts on a fresh Kali) vs what is installed
   firewall       the live ufw rules differ from deploy/firewall/ufw-status.txt (read through a read-only
                  sudo rule; rules are never applied automatically)
 
@@ -41,6 +43,7 @@ forgotten here raises an alert the next morning.
 
     python3 deploy_drift.py                    list the problems; exit 1 if there are any
     python3 deploy_drift.py --save-firewall    record the live firewall in deploy/firewall/ufw-status.txt
+    python3 deploy_drift.py --save-packages    record the stock Kali packages in deploy/packages-baseline.txt
 """
 from __future__ import annotations
 
@@ -173,6 +176,53 @@ def bin_drift(repo: Path = REPO, sbin: Path = Path("/usr/local/sbin")) -> list[t
     return problems
 
 
+PACKAGES_HEADER = """# The stock set of manually-installed packages on this Kali (apt-mark showmanual) that the SOC does not
+# depend on: the Kali install itself. deploy_drift.py ignores these; anything installed later that is
+# neither here nor in packages.txt is reported. Refresh with: python3 scripts/deploy_drift.py --save-packages
+"""
+
+
+def _pkg_list(path: Path) -> list[str]:
+    return [l.split("#")[0].strip() for l in (_read(path) or "").splitlines() if l.split("#")[0].strip()]
+
+
+def _manual_packages() -> set[str] | None:
+    try:
+        r = subprocess.run(["apt-mark", "showmanual"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return set(r.stdout.split()) if r.returncode == 0 else None
+
+
+def _installed_packages() -> set[str] | None:
+    try:
+        r = subprocess.run(["dpkg-query", "-W", "-f", "${Package} ${db:Status-Status}\\n"],
+                           capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if r.returncode != 0:
+        return None
+    return {p for p, _, st in (l.partition(" ") for l in r.stdout.splitlines()) if st.strip() == "installed"}
+
+
+def package_drift(repo: Path = REPO, manual: set | None = None, installed: set | None = None) -> list[tuple[str, str]]:
+    """("package missing", p) for each package of deploy/packages.txt that is not installed, and
+    ("package unlisted", p) for each package installed by hand that is neither in packages.txt nor in the
+    stock baseline (packages-baseline.txt): the rebuild recipe would not have it."""
+    want = _pkg_list(repo / "packages.txt")
+    if not want:
+        return []
+    manual = _manual_packages() if manual is None else manual
+    installed = _installed_packages() if installed is None else installed
+    out: list[tuple[str, str]] = []
+    if installed is not None:
+        out += [("package missing", p) for p in want if p not in installed]
+    if manual is not None:
+        known = set(want) | set(_pkg_list(repo / "packages-baseline.txt"))
+        out += [("package unlisted", p) for p in sorted(manual - known)]
+    return out
+
+
 def sensor_drift(repo: Path = REPO, root: Path = Path("/")) -> list[tuple[str, str]]:
     """[(kind, "sensors/<path>")] for each file of repo/sensors/ that differs from root/<path>. A file this
     user cannot read is skipped rather than reported (the daily self-test runs unprivileged)."""
@@ -203,6 +253,7 @@ def drift(repo: Path = REPO, live: Path = LIVE, crontab: str | None = None,
         problems += firewall_drift(repo)
     if sensors_root is not None:
         problems += bin_drift(repo)
+        problems += package_drift(repo)
     if sensors_root is not None:
         problems += sensor_drift(repo, sensors_root)
     have, want = _units(live), _units(repo)
@@ -233,6 +284,9 @@ EXPLAIN = {
     "outdated": "an earlier version from deploy/ is installed: run sudo deploy/install_all.sh",
     "not installed": "in deploy/ but not installed: run sudo deploy/install_all.sh",
     "crontab": "the crontab differs from deploy/crontab.txt: crontab -l > deploy/crontab.txt, or install that file",
+    "package missing": "listed in deploy/packages.txt but not installed: run sudo deploy/install_packages.sh",
+    "package unlisted": ("installed by hand but not in deploy/packages.txt: add it there if the SOC needs it (a "
+                         "rebuilt Kali would lack it), or remove it; for stock Kali packages, --save-packages"),
     "unsafe": "a root helper in /usr/local/sbin is writable by someone other than root: reinstall it (install_all.sh)",
     "firewall": ("the live firewall (ufw) differs from deploy/firewall/ufw-status.txt: someone changed a rule. If it "
                  "was intended, record it (deploy_drift.py --save-firewall) and commit; if not, undo it"),
@@ -251,6 +305,15 @@ def main() -> int:
         FIREWALL_FILE.parent.mkdir(parents=True, exist_ok=True)
         FIREWALL_FILE.write_text(FIREWALL_HEADER + live)
         print(f"saved {FIREWALL_FILE}; review with git diff, then commit")
+        return 0
+    if "--save-packages" in sys.argv:
+        manual = _manual_packages()
+        if manual is None:
+            print("cannot list the installed packages (apt-mark)")
+            return 1
+        base = sorted(manual - set(_pkg_list(REPO / "packages.txt")))
+        (REPO / "packages-baseline.txt").write_text(PACKAGES_HEADER + "\n".join(base) + "\n")
+        print(f"saved {len(base)} stock packages to {REPO / 'packages-baseline.txt'}; review with git diff, then commit")
         return 0
     problems = drift()
     for kind, name in problems:

@@ -15,6 +15,9 @@ puts it in place. That is how the SOC is rebuilt if this VM is lost.
 - the user crontab: `deploy/crontab.txt`
 - sudoers rules: `deploy/sudoers/`
 - templates for the secret env files: `deploy/env/*.env.example`
+- the packages the SOC needs: `deploy/packages.txt` (+ extra APT repositories in `deploy/apt/`), installed on a
+  fresh Kali by `deploy/install_packages.sh`. A package installed by hand must be added there. Rebuild order:
+  `docs/REBUILD_EN.md`
 - the sensors' configuration (Zeek, Suricata, osquery): `deploy/sensors/<absolute path>`, e.g.
   `deploy/sensors/etc/suricata/suricata.yaml`. A package update that replaces one shows up in `deploy_drift.py`;
   reinstall it with `install_all.sh --force`, which prints the restart each sensor needs

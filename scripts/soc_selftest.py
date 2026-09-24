@@ -37,6 +37,7 @@ test file) and never touches the network beyond this machine's own API.
 from __future__ import annotations
 
 import json
+import re
 import os
 import subprocess
 import sys
@@ -1986,6 +1987,15 @@ def inner() -> int:
     check("...and the installer's own check ignores the firewall (it is never applied automatically)",
           all(k_ != "firewall" for k_, _ in DD.drift(gr / "deploy", gl, check_crontab=False, sensors_root=None,
                                                     check_firewall=False)))
+    (gr / "deploy" / "packages.txt").write_text("# SOC\nnmap   # scans\nzeek\n")
+    (gr / "deploy" / "packages-baseline.txt").write_text("# stock\nkali-linux-core\n")
+    pdrift = DD.package_drift(gr / "deploy", manual={"nmap", "zeek", "kali-linux-core", "netcat-traditional"},
+                              installed={"nmap", "kali-linux-core", "netcat-traditional"})
+    check("packages: one listed but not installed is 'package missing', one installed by hand but unlisted is "
+          "'package unlisted', stock Kali packages are ignored",
+          sorted(pdrift) == [("package missing", "zeek"), ("package unlisted", "netcat-traditional")], str(pdrift))
+    check("...and every package in the real deploy/packages.txt is a single package name",
+          all(re.fullmatch(r"[a-z0-9][a-z0-9.+-]+", p_) for p_ in DD._pkg_list(SUITE / "deploy" / "packages.txt")))
     check("...and one that is not on the machine at all as not installed",
           DD.sensor_drift(gr / "deploy", sroot) == [("not installed", "sensors/opt/zeek/site/local.zeek")])
 

@@ -1,6 +1,8 @@
 # 003: Automated provisioning of a fresh Kali (packages and sensor configuration)
 
-- **Status:** Proposed
+- **Status:** Done (2026-09-24): sensor configuration in `deploy/sensors/` (68cf7ee); packages in `deploy/packages.txt`
+  and `deploy/install_packages.sh`, with drift detection and the full order in `docs/REBUILD_EN.md`. Still manual:
+  recreating the firewall rules and the network interfaces of the VM.
 - **Proposed:** 2026-09-23 by Arturo
 - **Effort:** medium
 

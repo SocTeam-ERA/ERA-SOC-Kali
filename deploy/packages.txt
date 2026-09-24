@@ -1,0 +1,67 @@
+# Packages the Sentinel SOC needs on a fresh Kali, installed by deploy/install_packages.sh.
+# One package per line; '#' starts a comment. deploy_drift.py (daily self-test) reports one that is missing,
+# and a package installed by hand that is neither here nor in packages-baseline.txt (the stock Kali set).
+# When you install something the SOC needs, add it here and commit.
+
+# --- scanning and capture (kali/*.sh) ---
+nmap
+ndiff
+zmap
+masscan
+netdiscover
+arp-scan
+tshark
+tcpdump
+whatweb
+nikto
+bind9-dnsutils
+net-tools
+iproute2
+ncat
+jq
+curl
+wget
+git
+tmux
+lsof
+openssl
+sqlite3
+
+# --- sensors (configuration in deploy/sensors/) ---
+zeek                # from the openSUSE security:zeek repository (deploy/apt/)
+suricata
+suricata-update
+osquery             # from pkg.osquery.io (deploy/apt/)
+aide
+chkrootkit
+yara
+auditd
+fail2ban
+lynis
+
+# --- Python: the SOC code uses only the standard library plus these, all from Debian ---
+python3
+python3-pip
+python3-venv
+python3-geoip2      # geoip_enrich.py, proxy_check.py
+python3-impacket    # ad_changes.py (AD permission parsing)
+python3-ldap3       # ad_inventory.py, ad_risks.py, ad_changes.py
+python3-openpyxl    # ad_report.py
+python3-yara        # malware_detector.py
+
+# --- remote access and system ---
+openssh-server
+xrdp
+xorgxrdp
+xfce4
+ufw                 # rules: deploy/firewall/ufw-status.txt (applied by hand)
+rsyslog
+
+# --- hardening from the 2026-09-22 Lynis review ---
+libpam-tmpdir
+apt-listbugs
+needrestart
+debsums
+apt-show-versions
+acct
+sysstat

@@ -42,6 +42,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1287,6 +1288,21 @@ def inner() -> int:
         check("the API refuses a request without a key", _call("/api/alerts", None)[0] == 401)
         code, d = _call("/api/alerts?limit=5")
         check("the alerts endpoint serves the feed", code == 200 and d["count"] >= 1)
+        sync_id = d["alerts"][0]["id"]
+        mark = datetime.now(timezone.utc).isoformat()
+        code, d = _call(f"/api/alerts/{sync_id}/status", "t-write", "POST", {"status": "acknowledged", "note": "looking"})
+        code, d = _call("/api/alerts?status_since=" + urllib.parse.quote(mark))
+        got_ = next((x_ for x_ in (d or {}).get("alerts", []) if x_["id"] == sync_id), None)
+        check("status_since returns an alert whose status just changed, with who, when and why",
+              code == 200 and got_ is not None and got_["status"] == "acknowledged" and got_["status_actor"] == "writer"
+              and got_["status_note"] == "looking" and got_.get("status_updated", "") >= mark, str(got_))
+        code, d = _call("/api/alerts?status_since=2999-01-01T00:00:00Z")
+        check("...and nothing for changes that have not happened", code == 200 and d["count"] == 0)
+        _call(f"/api/alerts/{sync_id}/status", "t-write", "POST", {"status": "open"})
+        code, d = _call("/api/alerts?status_since=" + urllib.parse.quote(mark))
+        got_ = next((x_ for x_ in (d or {}).get("alerts", []) if x_["id"] == sync_id), {})
+        check("a later change without a note clears the old note", got_.get("status") == "open" and "status_note" not in got_,
+              str(got_))
         check("incidents, entities, metrics, sources, detections and playbooks answer",
               all(_call(p)[0] == 200 for p in ("/api/incidents", "/api/entities", "/api/metrics", "/api/sources",
                                                "/api/detections", "/api/playbooks", "/api/suppressions")))

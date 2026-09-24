@@ -3,7 +3,8 @@
 
 Mostly read-only: every GET endpoint just reads the current snapshot.
 The write endpoints are deliberately narrow:
-  - POST /api/alerts/<id>/status can only change an alert's triage status
+  - POST /api/alerts/<id>/status can only change an alert's triage status (GET /api/alerts?status_since=<iso>
+    lists the alerts whose status changed since then, oldest change first, with status_actor/status_note)
     (open / acknowledged / resolved), nothing else about the alert.
   - POST /api/incidents/<id> can only change an incident's status,
     classification, owner and comments (see correlate.update_incident).
@@ -81,6 +82,9 @@ def _filter_alerts(alerts, qs):
     det = (qs.get("detector") or [None])[0]
     status = (qs.get("status") or [None])[0]
     since = _to_epoch((qs.get("since") or [None])[0])
+    # status_since: only alerts whose triage status changed at or after this instant (status_updated),
+    # for a consumer that mirrors statuses (the platform backend's poller)
+    status_since = _to_epoch((qs.get("status_since") or [None])[0])
     out = []
     for a in alerts:
         if sev and a.get("severity") != sev: continue
@@ -90,7 +94,12 @@ def _filter_alerts(alerts, qs):
         # "status" key at all -- treat that the same as "open"
         if status and a.get("status", "open") != status: continue
         if since and _alert_epoch(a) < since: continue
+        if status_since and (_to_epoch(a.get("status_updated")) or 0) < status_since: continue
         out.append(a)
+    if status_since:
+        # oldest change first, so a consumer paging with `limit` can advance its watermark to the last
+        # status_updated it received without skipping changes
+        out.sort(key=lambda a: _to_epoch(a.get("status_updated")) or 0)
     return out
 
 class Handler(BaseHTTPRequestHandler):

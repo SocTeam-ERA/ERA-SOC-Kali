@@ -849,8 +849,14 @@ def set_alert_status(alert_id: str, status: str, note: str = "", actor: str = ""
             now = datetime.now(timezone.utc).isoformat()
             target["status"] = status
             target["status_updated"] = now
+            # who and why travel with the alert, so a consumer syncing statuses (the platform backend,
+            # GET /api/alerts?status_since=) gets them without reading alert_status_log.jsonl. A change
+            # without a note clears the previous one: a stale reason on a new status would mislead.
+            target["status_actor"] = actor or None
             if note:
                 target["status_note"] = note
+            else:
+                target.pop("status_note", None)
 
             fd, tmp = tempfile.mkstemp(dir=str(ALERTS_SNAPSHOT.parent), suffix=".tmp")
             os.chmod(tmp, 0o664)

@@ -9,6 +9,9 @@ WorkingDirectory=/opt/sentinel-soc/scripts
 EnvironmentFile=/etc/sentinel-soc/soc-api.env
 Environment=SOC_API_HOST=0.0.0.0
 Environment=SOC_API_PORT=8080
+# Unbuffered stdout: the request log reaches the journal as each request happens. Buffered, it arrived
+# in 8 KB bursts stamped with the flush time, which on 2026-09-24 made a healthy poller look stopped.
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/soc_api.py
 Restart=always
 RestartSec=5

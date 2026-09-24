@@ -1,0 +1,3 @@
+--pidfile=/var/run/osqueryd.pidfile
+--database_path=/var/osquery/osquery.db
+--logger_mode=0644

@@ -15,6 +15,9 @@ puts it in place. That is how the SOC is rebuilt if this VM is lost.
 - the user crontab: `deploy/crontab.txt`
 - sudoers rules: `deploy/sudoers/`
 - templates for the secret env files: `deploy/env/*.env.example`
+- the sensors' configuration (Zeek, Suricata, osquery): `deploy/sensors/<absolute path>`, e.g.
+  `deploy/sensors/etc/suricata/suricata.yaml`. A package update that replaces one shows up in `deploy_drift.py`;
+  reinstall it with `install_all.sh --force`, which prints the restart each sensor needs
 
 When adding or changing a unit, timer, drop-in, cron line or sudoers rule:
 

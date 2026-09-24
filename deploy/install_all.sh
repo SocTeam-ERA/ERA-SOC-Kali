@@ -22,9 +22,11 @@
 #  An installed unit that is merely an earlier committed version of deploy/'s copy (deploy/ moved on
 #  since the last install) is not an edit: it is simply updated (deploy_drift.py reports it as outdated).
 #
+#    4b. the sensors' configuration from deploy/sensors/ (Zeek, Suricata, osquery), keeping each file's owner
+#       and mode; the restarts needed are printed, not run
+#
 #  NOT done here (see docs/INSTRUCCIONES_ES.md): installing packages (zeek, suricata, osquery, aide,
-#  nmap, python modules), Zeek/Suricata/osquery configuration, and the data/ restore
-#  (kali/backup_data.sh --restore).
+#  nmap, python modules) and the data/ restore (kali/backup_data.sh --restore).
 # ---------------------------------------------------------------------
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "This needs root: sudo bash $0"; exit 1; }
@@ -91,6 +93,41 @@ for d in "$SRC"/soc-*.d; do
   for c in "$d"/*.conf; do install -m 644 "$c" "$UNITS/$(basename "$d")/$(basename "$c")"; done
 done
 echo "[4/7] $n units and their drop-ins installed"
+
+# Sensor configuration (Zeek, Suricata, osquery): deploy/sensors/<absolute path> -> /<absolute path>.
+# An existing file keeps its owner and mode. Nothing is restarted here: the commands are printed.
+restart=()
+while IFS= read -r -d '' f; do
+  dst="/${f#"$SRC"/sensors/}"
+  cmp -s "$f" "$dst" && continue
+  if [[ -e "$dst" ]]; then
+    install -m "$(stat -c %a "$dst")" -o "$(stat -c %U "$dst")" -g "$(stat -c %G "$dst")" "$f" "$dst"
+  else
+    install -D -m 644 "$f" "$dst"
+  fi
+  echo "      updated $dst"
+  case "$dst" in
+    /opt/zeek/*)      restart+=("sudo /opt/zeek/bin/zeekctl deploy") ;;
+    /etc/suricata/*)  restart+=("sudo suricata -T -c /etc/suricata/suricata.yaml -q && sudo systemctl restart suricata") ;;
+    /etc/osquery/*)   restart+=("sudo systemctl restart osqueryd") ;;
+  esac
+done < <(find "$SRC/sensors" -type f -print0 2>/dev/null | sort -z)
+# Zeek's digest salt stays out of git (local.zeek loads it from here). Created once, never overwritten;
+# it reuses the salt of the pre-2026-09-17 configuration when that copy is still on disk.
+SALT_FILE=/opt/zeek/share/zeek/site/sentinel_salt.zeek
+if [[ -d /opt/zeek/share/zeek/site && ! -e "$SALT_FILE" ]]; then
+  salt="$(sed -n 's/^redef digest_salt = "\([^"]*\)";.*/\1/p' /opt/zeek/share/zeek/site/local.zeek.dpkg-old 2>/dev/null | head -1)"
+  [[ -z "$salt" || "$salt" == "Please change this value." ]] && salt="$(openssl rand -hex 24)"
+  ( umask 027; printf 'redef digest_salt = "%s";\n' "$salt" > "$SALT_FILE" )
+  chgrp zeek "$SALT_FILE" 2>/dev/null || true
+  echo "      created $SALT_FILE (the site's digest salt, not in git)"
+fi
+if (( ${#restart[@]} )); then
+  echo "[4/7] sensor configuration updated. Apply it with (Zeek's restart leaves a gap of about a minute):"
+  printf '%s\n' "${restart[@]}" | sort -u | sed 's/^/          /'
+else
+  echo "[4/7] sensor configuration already matches deploy/sensors/"
+fi
 
 for s in "$SRC"/sudoers/*; do
   visudo -cqf "$s" || { echo "[!] $s does not pass visudo; skipped"; continue; }

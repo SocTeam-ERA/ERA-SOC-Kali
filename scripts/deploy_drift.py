@@ -6,11 +6,16 @@ Does deploy/ still describe what is installed on this machine?
 
 deploy/ is the source of truth for everything the SOC needs outside this
 directory: the systemd units and timers, their drop-ins, the user crontab and
-the sudoers rule. deploy/install_all.sh copies it into place on a fresh Kali.
+the sudoers rule, and the sensors' configuration (deploy/sensors/<absolute path>: Zeek, Suricata,
+osquery). deploy/install_all.sh copies it into place on a fresh Kali.
 That only works if every change reaches deploy/ first. On 2026-09-23 only 8 of
 the 48 installed units were in the repository: the rest had been written
 straight into /etc/systemd/system and existed nowhere else, so losing the VM
 would have lost them.
+
+A sensor file is the typical victim of a package update: on 2026-09-17 the zeek package replaced
+site/local.zeek, Zeek silently switched its logs to TSV at the next restart, and its notices stopped
+producing alerts for about two days. Such a file shows up here as "changed" (a version never committed).
 
 Problems reported (each one names the file):
   missing        a soc-* unit or drop-in is installed but has no copy in deploy/
@@ -105,10 +110,33 @@ def _committed_versions(repo: Path, name: str) -> list[list[str]]:
         return []
 
 
+def sensor_drift(repo: Path = REPO, root: Path = Path("/")) -> list[tuple[str, str]]:
+    """[(kind, "sensors/<path>")] for each file of repo/sensors/ that differs from root/<path>. A file this
+    user cannot read is skipped rather than reported (the daily self-test runs unprivileged)."""
+    problems = []
+    base = repo / "sensors"
+    if not base.is_dir():
+        return problems
+    for f in sorted(p for p in base.rglob("*") if p.is_file()):
+        rel = f.relative_to(base)
+        name = f"sensors/{rel}"
+        live = root / rel
+        if not live.exists():
+            problems.append(("not installed", name))
+            continue
+        text = _read(live)
+        if text is None or normalize(text) == normalize(_read(f) or ""):
+            continue
+        problems.append(("outdated" if normalize(text) in _committed_versions(repo, name) else "changed", name))
+    return problems
+
+
 def drift(repo: Path = REPO, live: Path = LIVE, crontab: str | None = None,
-          check_crontab: bool = True) -> list[tuple[str, str]]:
+          check_crontab: bool = True, sensors_root: Path | None = Path("/")) -> list[tuple[str, str]]:
     """[(kind, name)] of every way deploy/ and this machine disagree; [] when they match."""
     problems = []
+    if sensors_root is not None:
+        problems += sensor_drift(repo, sensors_root)
     have, want = _units(live), _units(repo)
     for name in sorted(have.keys() | want.keys()):
         if name not in want:
@@ -132,7 +160,8 @@ def drift(repo: Path = REPO, live: Path = LIVE, crontab: str | None = None,
 
 EXPLAIN = {
     "missing": "installed but not in deploy/: copy it there (without the ntfy topic) and commit",
-    "changed": "edited on this machine: bring the change into deploy/ and commit, or reinstall from deploy/",
+    "changed": ("edited on this machine, or replaced by a package update (sensors/): bring the change into "
+                "deploy/ and commit, or reinstall from deploy/ (install_all.sh --force)"),
     "outdated": "an earlier version from deploy/ is installed: run sudo deploy/install_all.sh",
     "not installed": "in deploy/ but not installed: run sudo deploy/install_all.sh",
     "crontab": "the crontab differs from deploy/crontab.txt: crontab -l > deploy/crontab.txt, or install that file",

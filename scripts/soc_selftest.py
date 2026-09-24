@@ -1662,6 +1662,23 @@ def inner() -> int:
     check("...while a version that was never committed is still 'changed' (an edit made on the machine)",
           DD.drift(gr / "deploy", gl, check_crontab=False) == [("changed", "soc-y.service")])
 
+    # sensor configuration (deploy/sensors/<absolute path>), e.g. a package update replacing Zeek's local.zeek
+    sroot = tmp / "dd_sroot"
+    zk = gr / "deploy" / "sensors" / "opt" / "zeek" / "site"
+    zk.mkdir(parents=True)
+    (zk / "local.zeek").write_text("@load base/frameworks\n@load policy/tuning/json-logs\n")
+    (sroot / "opt" / "zeek" / "site").mkdir(parents=True)
+    (sroot / "opt" / "zeek" / "site" / "local.zeek").write_text("# comment\n@load base/frameworks\n@load policy/tuning/json-logs\n")
+    check("a sensor file equal to deploy/sensors/ (apart from comments) is not drift",
+          DD.sensor_drift(gr / "deploy", sroot) == [])
+    (sroot / "opt" / "zeek" / "site" / "local.zeek").write_text("@load base/frameworks\n")   # the package's own version
+    check("a sensor file replaced by a package update is reported as changed, by its path",
+          DD.sensor_drift(gr / "deploy", sroot) == [("changed", "sensors/opt/zeek/site/local.zeek")],
+          str(DD.sensor_drift(gr / "deploy", sroot)))
+    (sroot / "opt" / "zeek" / "site" / "local.zeek").unlink()
+    check("...and one that is not on the machine at all as not installed",
+          DD.sensor_drift(gr / "deploy", sroot) == [("not installed", "sensors/opt/zeek/site/local.zeek")])
+
     print(json.dumps([{"name": n_, "ok": ok_, "detail": d} for n_, ok_, d in results]))
     return 0
 

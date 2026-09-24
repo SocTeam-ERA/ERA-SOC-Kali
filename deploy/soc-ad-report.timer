@@ -1,0 +1,9 @@
+[Unit]
+Description=Write the Active Directory account review on the 1st of each month
+
+[Timer]
+OnCalendar=*-*-01 07:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

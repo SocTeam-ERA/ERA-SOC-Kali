@@ -1044,6 +1044,17 @@ def inner() -> int:
     check("a detector watching this appliance does not map its local users to AD",
           "identity" not in (find(got, "selftest local user") or {}).get("details", {}))
 
+    # the monthly AD review workbook (ad_report.py), from the test inventory above (OLDPC, jdoe)
+    import ad_report
+    import openpyxl
+    rep = tmp / "ad_review.xlsx"
+    counts_ = ad_report.build(rep, d0)
+    wb_ = openpyxl.load_workbook(rep)
+    urow = {r_[0]: r_ for r_ in wb_["Users"].iter_rows(min_row=2, values_only=True)}
+    check("the monthly AD review workbook has its sheets, and a Domain Admin is marked for review, not cleanup",
+          wb_.sheetnames == ["Summary", "Computers", "Users", "Admins", "Domain weaknesses"]
+          and counts_["computers"] == 1 and urow.get("jdoe", (None, None, None))[2] == "review", str(urow)[:200])
+
     # changes to GPOs, links, trusts and domain permissions (ad_changes.py; pure comparison, no LDAP)
     import ad_changes as ACH
     check("gPLink is parsed, and a disabled link is marked",

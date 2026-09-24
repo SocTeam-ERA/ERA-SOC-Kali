@@ -7,6 +7,9 @@ proposal becomes ordinary work in `scripts/`, `kali/` or `deploy/`, and its file
 | # | Proposal | Status | Proposed |
 | --- | --- | --- | --- |
 | 001 | [Self-hosted ntfy server for critical alert pushes](001-self-hosted-ntfy.md) | Proposed | 2026-09-23 |
+| 002 | [Off-VM copy of the daily data backup](002-off-vm-data-backup.md) | Proposed | 2026-09-23 |
+| 003 | [Automated provisioning of a fresh Kali (packages and sensor configuration)](003-automated-provisioning.md) | Proposed | 2026-09-23 |
+| 004 | [Resolve alerts with a note in the platform dashboard, synced back to the Kali](004-resolve-with-note-in-platform.md) | Proposed | 2026-09-23 |
 
 ## Adding a proposal
 

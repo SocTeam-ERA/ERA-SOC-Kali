@@ -1,0 +1,8 @@
+[Unit]
+Description=Monthly retention archival for data/alerts.jsonl (moves alerts older than 180 days into compressed monthly archives)
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/archive_alerts.py

@@ -1,0 +1,1 @@
+adelcueto ALL=(root) NOPASSWD: /usr/bin/nmap

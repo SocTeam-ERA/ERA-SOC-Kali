@@ -1,0 +1,7 @@
+[Unit]
+Description=Sentinel SOC Zeek watchdog (zeekctl cron -- restarts any crashed node)
+After=soc-zeek-boot.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/zeek/bin/zeekctl cron

@@ -1,0 +1,15 @@
+[Unit]
+Description=Sentinel SOC osquery results forwarder
+After=osqueryd.service
+Requires=osqueryd.service
+
+[Service]
+Type=simple
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/kali
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/kali/osquery_to_alerts.py --follow
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

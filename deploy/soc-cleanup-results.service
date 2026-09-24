@@ -1,0 +1,7 @@
+[Unit]
+Description=Weekly retention cleanup for kali/results/ (deletes files older than 90 days)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/sentinel-soc/kali
+ExecStart=/opt/sentinel-soc/kali/cleanup_results.sh

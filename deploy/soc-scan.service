@@ -1,0 +1,8 @@
+[Unit]
+Description=Sentinel SOC scheduled scan
+After=network-online.target
+ 
+[Service]
+Type=oneshot
+ExecStart=/opt/sentinel-soc/kali/scheduled_scan.sh
+Environment=SOC_MAX_SNAPSHOT=5000

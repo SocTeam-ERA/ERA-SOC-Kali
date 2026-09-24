@@ -1,0 +1,16 @@
+# /etc/systemd/system/soc-dhcp-fingerprint.service
+[Unit]
+Description=Sentinel SOC DHCP hostname -> asset inventory enrichment
+After=soc-zeek-boot.service
+Requires=soc-zeek-boot.service
+
+[Service]
+Type=simple
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/kali
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/kali/dhcp_to_assets.py --follow
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

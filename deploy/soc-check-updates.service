@@ -1,0 +1,9 @@
+[Unit]
+Description=Check for pending Kali package updates (notify-only, does not apply them)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/sentinel-soc/scripts
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/check_updates.py

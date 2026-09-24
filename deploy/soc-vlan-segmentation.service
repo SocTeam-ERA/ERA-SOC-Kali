@@ -1,0 +1,11 @@
+[Unit]
+Description=Sentinel SOC daily VLAN segmentation test (cross-VLAN reachability through real gateways)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/sentinel-soc/kali
+Environment=SCAN_AUTHORIZED=yes
+Environment=SOC_MAX_SNAPSHOT=5000
+ExecStart=/opt/sentinel-soc/kali/5_vlan_segmentation_test.sh

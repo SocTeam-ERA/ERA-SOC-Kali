@@ -1,0 +1,14 @@
+[Unit]
+Description=Sentinel SOC Zeek cluster (start at boot)
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/zeek/bin/zeekctl deploy
+ExecStop=/opt/zeek/bin/zeekctl stop
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

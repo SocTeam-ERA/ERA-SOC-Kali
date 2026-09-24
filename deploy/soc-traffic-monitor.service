@@ -1,0 +1,18 @@
+[Unit]
+Description=Sentinel SOC continuous passive traffic monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/kali
+Environment=CAPTURE_AUTHORIZED=yes
+Environment=IFACE=any
+Environment=WINDOW=180
+ExecStart=/opt/sentinel-soc/kali/4b_traffic_monitor.sh
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

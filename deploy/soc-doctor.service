@@ -1,0 +1,8 @@
+[Unit]
+Description=Sentinel SOC daily pipeline health check (permissions, stale scan markers, services, timers, disk, last scan)
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/soc_doctor.py

@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Suricata ruleset update (Emerging Threats Open)
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

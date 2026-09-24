@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the VLAN segmentation test daily, early morning
+
+[Timer]
+# 01:00 -- clear of the 00:00-00:35 chkrootkit/lynis/logrotate cluster,
+# clear of the 04:00 regular soc-scan cycle, and clear of the weekly
+# soc-vuln-scan (Sunday 02:00). Fast (~30 pings) and non-intrusive, so
+# daily is fine unlike the heavier deep vuln scan.
+OnCalendar=*-*-* 01:00:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=Sentinel SOC weekly deep vulnerability scan (nikto/whatweb/full nmap vuln category/SNMP)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/kali
+Environment=SOC_MAX_SNAPSHOT=5000
+ExecStart=/opt/sentinel-soc/kali/scheduled_vuln_scan.sh

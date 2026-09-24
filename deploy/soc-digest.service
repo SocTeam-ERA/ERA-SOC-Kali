@@ -1,0 +1,8 @@
+[Unit]
+Description=Sentinel SOC weekly digest (new findings, resolved vulns, new devices, top hosts by open findings)
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/weekly_digest.py

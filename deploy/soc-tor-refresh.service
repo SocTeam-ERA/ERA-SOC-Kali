@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh the Tor exit-node list for Sentinel SOC
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+ExecStart=/opt/sentinel-soc/kali/refresh_tor.sh

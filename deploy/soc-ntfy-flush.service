@@ -1,0 +1,8 @@
+[Unit]
+Description=Sentinel SOC ntfy critical-alert batch flusher
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/ntfy_flush.py

@@ -1,0 +1,14 @@
+[Unit]
+Description=Sentinel SOC login/intrusion monitor
+After=network-online.target
+
+[Service]
+User=root
+WorkingDirectory=/opt/sentinel-soc/scripts
+Environment=SOC_MAX_SNAPSHOT=5000
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/login_monitor.py --auth-log /var/log/auth.log --follow --known-ips /opt/sentinel-soc/data/known_ips.txt
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

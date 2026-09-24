@@ -10,8 +10,8 @@
 #    soc-ad-privileged.timer  every 15 minutes compares only the privileged groups (a new Domain Admin
 #                             should not wait until tomorrow). Safe to re-run to add it to an older install.
 #  An addition to a privileged group is a critical alert, pushed to the phone through ntfy. The ntfy
-#  topic is a secret that lives only in the existing units under /etc/systemd/system, so it is copied
-#  from soc-login.service into a private drop-in rather than written into this repository.
+#  topic is a secret that lives only on this machine (soc-login's ntfy.conf drop-in, or the unit itself on
+#  older installs), so it is copied from there into a private drop-in rather than written into this repository.
 # ---------------------------------------------------------------------
 set -euo pipefail
 [[ $EUID -eq 0 ]] || { echo "This needs root: sudo bash $0"; exit 1; }
@@ -19,7 +19,7 @@ SRC=/opt/sentinel-soc/deploy
 UNITS=/etc/systemd/system
 
 [[ -r /etc/sentinel-soc/ad-ldap.env ]] || { echo "Missing /etc/sentinel-soc/ad-ldap.env (see scripts/ad_inventory.py)"; exit 1; }
-TOPIC_LINE="$(grep -h '^Environment=NTFY_TOPIC=' "$UNITS/soc-login.service" | head -1 || true)"
+TOPIC_LINE="$(grep -hs '^Environment=NTFY_TOPIC=' "$UNITS/soc-login.service.d/ntfy.conf" "$UNITS/soc-login.service" | head -1 || true)"
 [[ -n "$TOPIC_LINE" ]] || echo "[!] no NTFY_TOPIC found in soc-login.service: alerts will not be pushed to the phone"
 
 for u in soc-ad-inventory.service soc-ad-inventory.timer soc-ad-privileged.service soc-ad-privileged.timer; do

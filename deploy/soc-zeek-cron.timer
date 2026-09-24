@@ -1,0 +1,10 @@
+[Unit]
+Description=Run zeekctl cron every 5 minutes (Zeek's own documented watchdog mechanism)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

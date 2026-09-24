@@ -1,0 +1,9 @@
+[Unit]
+Description=Sentinel SOC Suricata ruleset update (Emerging Threats Open)
+After=network-online.target suricata.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/suricata-update
+ExecStartPost=/usr/bin/suricatasc -c reload-rules

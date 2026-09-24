@@ -1535,6 +1535,31 @@ def inner() -> int:
     finally:
         CF.stale_services = real_stale
 
+    group("deploy drift")
+    import deploy_drift as DD
+    dd_repo, dd_live = tmp / "dd_repo", tmp / "dd_live"
+    dd_repo.mkdir()
+    dd_live.mkdir()
+    (dd_repo / "soc-x.service").write_text("[Service]\n# the topic lives in a drop-in\nExecStart=/bin/true\n")
+    (dd_live / "soc-x.service").write_text("[Service]\nEnvironment=NTFY_TOPIC=abc123\n  ExecStart=/bin/true  \n\n")
+    (dd_live / "soc-x.service.d").mkdir()
+    (dd_live / "soc-x.service.d" / "ntfy.conf").write_text("[Service]\nEnvironment=NTFY_TOPIC=abc123\n")
+    check("an installed unit that matches deploy/ apart from the ntfy topic, comments and whitespace is not drift",
+          DD.drift(dd_repo, dd_live, check_crontab=False) == [])
+    (dd_live / "soc-new.timer").write_text("[Timer]\nOnCalendar=daily\n")
+    (dd_live / "soc-x.service").write_text("[Service]\nExecStart=/bin/false\n")
+    (dd_repo / "soc-old.timer").write_text("[Timer]\nOnCalendar=daily\n")
+    got = DD.drift(dd_repo, dd_live, check_crontab=False)
+    check("a unit installed only in /etc, one edited there, and one never installed are each reported",
+          sorted(got) == [("changed", "soc-x.service"), ("missing", "soc-new.timer"), ("not installed", "soc-old.timer")], str(got))
+    (dd_repo / "soc-old.timer").write_text("[Timer]\nOnCalendar=daily\nEnvironment=NTFY_TOPIC=abc123\n")
+    check("a topic written into deploy/ is reported as a secret",
+          ("secret", "soc-old.timer") in DD.drift(dd_repo, dd_live, check_crontab=False))
+    (dd_repo / "crontab.txt").write_text("17 3 * * * backup\n")
+    check("a crontab that differs from deploy/crontab.txt is reported, an equal one is not",
+          ("crontab", "crontab.txt") in DD.drift(dd_repo, dd_live, crontab="17 3 * * * other\n")
+          and ("crontab", "crontab.txt") not in DD.drift(dd_repo, dd_live, crontab="# m h\n17 3 * * * backup\n"))
+
     print(json.dumps([{"name": n_, "ok": ok_, "detail": d} for n_, ok_, d in results]))
     return 0
 
@@ -1591,6 +1616,11 @@ def run_live() -> None:
     from soc_doctor import TIMERS
     bad = [t for t in TIMERS if subprocess.run(["systemctl", "is-enabled", t], capture_output=True, text=True).stdout.strip() != "enabled"]
     check("all scheduled timers are enabled", not bad, ", ".join(bad))
+    import deploy_drift
+    drifted = deploy_drift.drift()
+    for kind, name in drifted:
+        check(f"deploy/ matches this machine: {name}", False, f"{kind}: {deploy_drift.EXPLAIN[kind]}")
+    check("deploy/ matches the installed units, drop-ins and crontab", not drifted, f"{len(drifted)} difference(s)")
 
     token = read_token()
     if token is None:

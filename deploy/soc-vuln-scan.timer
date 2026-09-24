@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the deep vulnerability scan weekly, Sunday early morning
+
+[Timer]
+# Sunday 02:00 -- clear of the 00:00-00:35 chkrootkit/lynis/logrotate
+# cluster, clear of the regular soc-scan.timer cycle (00:00, runs ~60-90
+# min), and clear of soc-tor-refresh (03:01). Lowest-traffic night of the
+# week, for the most intrusive scan this project runs.
+OnCalendar=Sun *-*-* 02:00:00
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

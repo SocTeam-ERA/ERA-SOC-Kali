@@ -1,0 +1,3 @@
+17 3 * * * /opt/sentinel-soc/kali/backup_data.sh >> $HOME/soc-backups/backup.log 2>&1
+30 6 * * * /usr/bin/python3 /opt/sentinel-soc/scripts/soc_selftest.py --alert-on-fail >> $HOME/soc-backups/selftest.log 2>&1
+* * * * * /usr/bin/python3 /opt/sentinel-soc/scripts/dns_probe.py --probe

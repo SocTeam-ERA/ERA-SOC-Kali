@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the chkrootkit forwarder shortly after chkrootkit's own daily run
+
+[Timer]
+# chkrootkit.timer fires daily at 00:00 and its run takes ~10min on this
+# box (confirmed 2026-09-17: CPU time 10min 30s) -- 00:30 gives comfortable
+# margin so the log is complete before we parse it.
+OnCalendar=*-*-* 00:30:00
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target

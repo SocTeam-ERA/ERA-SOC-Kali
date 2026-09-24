@@ -1,0 +1,8 @@
+[Unit]
+Description=Sentinel SOC disk space check
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/disk_space_check.py

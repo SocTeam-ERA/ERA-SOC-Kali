@@ -1,0 +1,8 @@
+[Unit]
+Description=Sentinel SOC service watchdog (checks the monitoring services themselves are up)
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/service_watchdog.py

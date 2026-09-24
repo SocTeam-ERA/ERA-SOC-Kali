@@ -9,7 +9,7 @@
 #    soc-poisoner-canary.timer   every 10 min asks every network for a made-up name (LLMNR / NBT-NS);
 #                                only a poisoner such as Responder answers
 #  Both raise critical alerts, which are pushed to the phone through ntfy. The ntfy topic is a secret
-#  that lives only in the existing units under /etc/systemd/system, so it is copied from soc-login.service
+#  that lives only on this machine (soc-login's ntfy.conf drop-in, or the unit itself on older installs), so it is copied from there
 #  into a private drop-in for each new unit rather than written into this repository.
 # ---------------------------------------------------------------------
 set -euo pipefail
@@ -17,7 +17,7 @@ set -euo pipefail
 SRC=/opt/sentinel-soc/deploy
 UNITS=/etc/systemd/system
 
-TOPIC_LINE="$(grep -h '^Environment=NTFY_TOPIC=' "$UNITS/soc-login.service" | head -1 || true)"
+TOPIC_LINE="$(grep -hs '^Environment=NTFY_TOPIC=' "$UNITS/soc-login.service.d/ntfy.conf" "$UNITS/soc-login.service" | head -1 || true)"
 [[ -n "$TOPIC_LINE" ]] || echo "[!] no NTFY_TOPIC found in soc-login.service: alerts will not be pushed to the phone"
 
 for u in soc-l2-watch.service soc-poisoner-canary.service soc-poisoner-canary.timer; do

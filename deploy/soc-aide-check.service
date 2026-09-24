@@ -1,0 +1,6 @@
+[Unit]
+Description=Sentinel SOC file integrity check (AIDE)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/kali/aide_to_alerts.py

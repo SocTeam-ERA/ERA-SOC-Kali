@@ -1,0 +1,15 @@
+[Unit]
+Description=Sentinel SOC Suricata alert forwarder
+After=suricata.service
+Requires=suricata.service
+
+[Service]
+Type=simple
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/kali
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/kali/suricata_to_alerts.py --follow
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

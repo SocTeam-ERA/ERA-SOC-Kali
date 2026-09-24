@@ -1,0 +1,9 @@
+[Unit]
+Description=Sentinel SOC chkrootkit forwarder (turns chkrootkit's daily findings into SOC alerts)
+After=chkrootkit.service
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/kali
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/kali/chkrootkit_to_alerts.py

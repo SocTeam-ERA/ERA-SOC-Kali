@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily Sentinel SOC pipeline health check
+
+[Timer]
+OnCalendar=*-*-* 06:15:00
+RandomizedDelaySec=900
+Persistent=true
+
+[Install]
+WantedBy=timers.target

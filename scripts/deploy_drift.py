@@ -14,7 +14,10 @@ would have lost them.
 
 Problems reported (each one names the file):
   missing        a soc-* unit or drop-in is installed but has no copy in deploy/
-  changed        the installed file differs from its copy in deploy/
+  changed        the installed file differs from its copy in deploy/, and from every version of it
+                 ever committed: it was edited on this machine
+  outdated       the installed file is an earlier committed version of its copy in deploy/: deploy/
+                 moved on (a pull, a commit) and install_all.sh has not been run since. Safe to install
   not installed  deploy/ has a unit or drop-in that is not installed
   crontab        the user crontab differs from deploy/crontab.txt
   secret         a file in deploy/ carries a value for NTFY_TOPIC
@@ -82,6 +85,26 @@ def _crontab() -> str | None:
     return r.stdout if r.returncode == 0 else ""
 
 
+def _committed_versions(repo: Path, name: str) -> list[list[str]]:
+    """Every version of repo/name ever committed to git, normalized; [] when repo is not in a git
+    repository or git fails (the caller then treats a difference as a local edit, the safe side).
+    install_all.sh runs this as root on a checkout owned by the SOC user, hence safe.directory."""
+    rel = f"{repo.name}/{name}"
+    git = ["git", "-c", f"safe.directory={repo.parent}", "-C", str(repo.parent)]
+    try:
+        log = subprocess.run(git + ["log", "--format=%H", "--", rel], capture_output=True, text=True, timeout=20)
+        if log.returncode != 0:
+            return []
+        out = []
+        for commit in log.stdout.split():
+            show = subprocess.run(git + ["show", f"{commit}:{rel}"], capture_output=True, text=True, timeout=20)
+            if show.returncode == 0:
+                out.append(normalize(show.stdout))
+        return out
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+
 def drift(repo: Path = REPO, live: Path = LIVE, crontab: str | None = None,
           check_crontab: bool = True) -> list[tuple[str, str]]:
     """[(kind, name)] of every way deploy/ and this machine disagree; [] when they match."""
@@ -95,7 +118,8 @@ def drift(repo: Path = REPO, live: Path = LIVE, crontab: str | None = None,
         else:
             live_text = _read(have[name])
             if live_text is not None and normalize(live_text) != normalize(_read(want[name]) or ""):
-                problems.append(("changed", name))
+                committed = _committed_versions(repo, name)
+                problems.append(("outdated" if normalize(live_text) in committed else "changed", name))
     if check_crontab and (repo / "crontab.txt").exists():
         current = _crontab() if crontab is None else crontab
         if current is not None and normalize(current) != normalize(_read(repo / "crontab.txt") or ""):
@@ -109,6 +133,7 @@ def drift(repo: Path = REPO, live: Path = LIVE, crontab: str | None = None,
 EXPLAIN = {
     "missing": "installed but not in deploy/: copy it there (without the ntfy topic) and commit",
     "changed": "edited on this machine: bring the change into deploy/ and commit, or reinstall from deploy/",
+    "outdated": "an earlier version from deploy/ is installed: run sudo deploy/install_all.sh",
     "not installed": "in deploy/ but not installed: run sudo deploy/install_all.sh",
     "crontab": "the crontab differs from deploy/crontab.txt: crontab -l > deploy/crontab.txt, or install that file",
     "secret": "carries the ntfy topic: remove the value, it belongs in a private ntfy.conf drop-in",

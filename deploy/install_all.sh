@@ -19,6 +19,8 @@
 #
 #  Refuses to run if an installed unit was edited on this machine and the edit is not in deploy/:
 #  installing would silently undo it. Bring the change into deploy/ first, or pass --force.
+#  An installed unit that is merely an earlier committed version of deploy/'s copy (deploy/ moved on
+#  since the last install) is not an edit: it is simply updated (deploy_drift.py reports it as outdated).
 #
 #  NOT done here (see docs/INSTRUCCIONES_ES.md): installing packages (zeek, suricata, osquery, aide,
 #  nmap, python modules), Zeek/Suricata/osquery configuration, and the data/ restore

@@ -1639,6 +1639,29 @@ def inner() -> int:
           ("crontab", "crontab.txt") in DD.drift(dd_repo, dd_live, crontab="17 3 * * * other\n")
           and ("crontab", "crontab.txt") not in DD.drift(dd_repo, dd_live, crontab="# m h\n17 3 * * * backup\n"))
 
+    # outdated vs changed: an installed unit equal to an EARLIER committed version is just behind deploy/
+    gr = tmp / "dd_git"
+    (gr / "deploy").mkdir(parents=True)
+    gl = tmp / "dd_git_live"
+    gl.mkdir()
+    g = lambda *a: subprocess.run(["git", "-C", str(gr), *a], capture_output=True, text=True, timeout=20)  # noqa: E731
+    g("init", "-q")
+    g("config", "user.email", "selftest@localhost")
+    g("config", "user.name", "selftest")
+    unit = gr / "deploy" / "soc-y.service"
+    unit.write_text("[Service]\nExecStart=/bin/true\n")
+    g("add", "-A")
+    g("commit", "-qm", "v1")
+    unit.write_text("[Service]\nExecStart=/bin/true\nEnvironment=PYTHONUNBUFFERED=1\n")
+    g("commit", "-qam", "v2")
+    (gl / "soc-y.service").write_text("[Service]\n# old comment\nExecStart=/bin/true\n")
+    check("a unit installed from an earlier committed version of deploy/ is 'outdated' (safe to install), not 'changed'",
+          DD.drift(gr / "deploy", gl, check_crontab=False) == [("outdated", "soc-y.service")],
+          str(DD.drift(gr / "deploy", gl, check_crontab=False)))
+    (gl / "soc-y.service").write_text("[Service]\nExecStart=/bin/false\n")
+    check("...while a version that was never committed is still 'changed' (an edit made on the machine)",
+          DD.drift(gr / "deploy", gl, check_crontab=False) == [("changed", "soc-y.service")])
+
     print(json.dumps([{"name": n_, "ok": ok_, "detail": d} for n_, ok_, d in results]))
     return 0
 

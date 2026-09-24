@@ -852,7 +852,7 @@ def inner() -> int:
           "AD privileged group members recorded (baseline)" in t1 and not any(x_.startswith("New ") for x_ in t1), str(t1))
     w = next((x_ for x_ in al1 if x_["title"].startswith("Unsupported Windows (per AD) on OLD10")), None)
     check("an unsupported active PC alerts with its IP from the scan; a stale one does not (it is in the stale list instead)",
-          w is not None and w["source_ip"] == "10.69.1.10" and w["type"] == "vuln"
+          w is not None and w["source_ip"] == "10.69.1.10" and w["type"] == "vuln" and w["severity"] == "medium"
           and not any("on GONE" in x_ for x_ in t1), str(t1))
     check("a release losing support within the warning window is one grouped alert",
           any(x_.startswith("1 computer(s) lose Windows support on 2026-10-13") for x_ in t1), str(t1))
@@ -868,11 +868,12 @@ def inner() -> int:
     snap2["users"]["mallory"] = usr("mallory")
     al2, st2 = AD.evaluate(snap2, st1, {"OLD10": "10.69.1.10", "ROGUE-PC": "10.69.1.99"}, d0, ["TEST-*"])
     by = {x_["title"]: x_ for x_ in al2}
-    check("next day: an addition to Domain Admins is critical, a removal is normal",
+    check("next day: an addition to Domain Admins is critical, a removal is medium",
           by.get("Added to Domain Admins: mallory", {}).get("severity") == "critical"
-          and by.get("Removed from Domain Admins: ana", {}).get("severity") == "normal", str(list(by)))
+          and by.get("Removed from Domain Admins: ana", {}).get("severity") == "medium", str(list(by)))
     check("...new computer and user accounts are reported once each",
-          "New computer in AD: LAPTOP9" in by and "New user account in AD: mallory (Mallory)" in by, str(list(by)))
+          "New computer in AD: LAPTOP9" in by and "New user account in AD: mallory (Mallory)" in by
+          and by["New computer in AD: LAPTOP9"]["severity"] == "medium", str(list(by)))
     check("...and nothing already reported comes back (unsupported PC, ending-soon group, stale lists, not-in-domain host)",
           not any(x_.startswith(("Unsupported Windows", "1 computer(s) lose", "Windows host not in")) or "unused for" in x_
                   for x_ in by), str(list(by)))

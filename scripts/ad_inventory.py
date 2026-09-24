@@ -16,10 +16,12 @@ AD. This asks AD directly, once a day, and keeps the answer in data/ad_inventory
   * the members (recursive) of the privileged groups.
 
 and alerts (detector "ad_inventory") on:
-  * someone added to a privileged group (critical) or removed from one (normal);
-  * a new computer or user account in AD (normal: the delegated admin should recognise it);
+  * someone added to a privileged group (critical) or removed from one (medium);
+  * a new computer or user account in AD (medium: the delegated admin should recognise it);
   * a computer whose Windows version no longer gets security updates, from AD's exact build
-    and edition (vuln, normal / medium after a year);
+    and edition (vuln, medium);
+Anything a person should look at is at least medium: the platform dashboard's default (triage)
+view hides the rest, since its backend maps the Kali's "normal" to "low".
   * a Windows version that loses support within WARN_DAYS, once per release and date;
   * enabled computers and user accounts that have not signed in for STALE_DAYS (one summary
     alert when new ones join the list);
@@ -348,7 +350,7 @@ def privileged_changes(before: Dict[str, List[str]], now: Dict[str, List[str]]) 
                              "compromise of the domain."),
                 details={"group": group, "change": "added", "members": members}))
         for sam in sorted(old - set(members), key=str.lower):
-            out.append(dict(type="intrusion", severity="normal", title=f"Removed from {group}: {sam}", user=sam,
+            out.append(dict(type="intrusion", severity="medium", title=f"Removed from {group}: {sam}", user=sam,
                             detector=DETECTOR, description=f"{sam} is no longer a member of {group}.",
                             details={"group": group, "change": "removed", "members": members}))
     return out
@@ -381,7 +383,7 @@ def evaluate(snap: Dict[str, Any], state: Dict[str, Any], network_hosts: Dict[st
                                             ("user", users, state.get("users", []), "user account")):
             new = sorted(set(current) - set(before))
             if len(new) > MAX_INDIVIDUAL_NEW:
-                add(type="intrusion", severity="normal", title=f"{len(new)} new {noun}s in AD",
+                add(type="intrusion", severity="medium", title=f"{len(new)} new {noun}s in AD",
                     description=f"Too many to list one by one (state reset or reorganisation?): {_names(new)}",
                     details={"kind": kind, "new": new})
                 continue
@@ -389,7 +391,7 @@ def evaluate(snap: Dict[str, Any], state: Dict[str, Any], network_hosts: Dict[st
                 o = current[key]
                 label = o["name"] if kind == "computer" else o["sam"]
                 extra = f" ({o.get('display')})" if kind == "user" and o.get("display") else ""
-                add(type="intrusion", severity="normal", title=f"New {noun} in AD: {label}{extra}",
+                add(type="intrusion", severity="medium", title=f"New {noun} in AD: {label}{extra}",
                     hostname=o.get("dns") if kind == "computer" else None,
                     user=o["sam"] if kind == "user" else None,
                     description=(f"A {noun} was created in Active Directory (OU {o.get('ou') or '-'}, created "
@@ -409,7 +411,9 @@ def evaluate(snap: Dict[str, Any], state: Dict[str, Any], network_hosts: Dict[st
             if alerted_unsupported.get(name) == c["build"]:
                 continue
             overdue = -s["days_left"]
-            add(type="vuln", severity="medium" if overdue > 365 else "normal",
+            # medium from day one (was normal for the first year): the platform dashboard's default view hides
+            # anything below medium, and an unpatchable PC should not wait a year to be seen
+            add(type="vuln", severity="medium",
                 title=f"Unsupported Windows (per AD) on {name}: {s['release']} {s['track']}",
                 hostname=c.get("dns") or name, source_ip=network_hosts.get(name),
                 description=(f"Active Directory reports {c['os']} build {c['build']} ({s['release']}). The "

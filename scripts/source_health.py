@@ -69,7 +69,48 @@ SOURCES: List[Dict[str, Any]] = [
     # the canary is a blind spot the moment it stops running: nobody would notice a poisoner
     {"id": "poisoner_canary", "name": "LLMNR/NBT-NS poisoner canary", "kind": "timer",
      "unit": "soc-poisoner-canary.timer", "max_age_min": 45},
+    # kind "geoip": can alerts still be located? A lookup must work AND recent alerts from public IPs must
+    # carry a location. Geolocation was a silent no-op for two weeks (no database installed), and the
+    # analysts use it to see where connections come from, so it must never be quietly off again.
+    {"id": "geolocation", "name": "Alert geolocation", "kind": "geoip", "max_age_min": 0},
 ]
+
+GEO_RECENT_HOURS = 6
+GEO_PROBE_IP, GEO_PROBE_COUNTRY = "8.8.8.8", "US"
+
+
+def geoip_problem(alerts: Optional[List[Dict[str, Any]]] = None, now: Optional[float] = None) -> Optional[str]:
+    """None when geolocation works, else why not. Two parts: a lookup of a well-known address must give
+    its country (databases present and readable), and no real alert of the last GEO_RECENT_HOURS from a
+    public source IP may lack `details.geo` (a service running code from before geolocation, or an
+    enrichment step that broke)."""
+    import geoip_enrich
+    got = geoip_enrich.geolocate(GEO_PROBE_IP)
+    if not got or got.get("country_code") != GEO_PROBE_COUNTRY:
+        st = geoip_enrich.status()
+        return (f"a lookup of {GEO_PROBE_IP} returned {got!r} instead of {GEO_PROBE_COUNTRY}; databases: "
+                f"country {'present' if st['country']['available'] else 'MISSING'} ({st['country']['path']}), "
+                f"city {'present' if st['city']['available'] else 'MISSING'} ({st['city']['path']})")
+    import soc_core
+    now = now or time.time()
+    if alerts is None:
+        alerts = soc_core._load_snapshot()
+    missing = []
+    for a in alerts:
+        if a.get("test") or not geoip_enrich.is_public(a.get("source_ip") or ""):
+            continue
+        try:
+            t = datetime.fromisoformat(str(a.get("timestamp"))).timestamp()
+        except ValueError:
+            continue
+        if now - t <= GEO_RECENT_HOURS * 3600 and not (a.get("details") or {}).get("geo"):
+            missing.append(a)
+    if missing:
+        return (f"{len(missing)} alert(s) in the last {GEO_RECENT_HOURS} hours came from a public IP "
+                f"(e.g. {missing[0].get('source_ip')}, '{str(missing[0].get('title'))[:60]}') and carry no location, although "
+                "the databases work: a service is probably still running code from before geolocation was enabled "
+                "(restart it), or the enrichment step is failing")
+    return None
 
 
 def _last_event(src: Dict[str, Any]) -> Optional[float]:
@@ -106,6 +147,14 @@ def check() -> List[Dict[str, Any]]:
     out = []
     for src in SOURCES:
         rec = {"id": src["id"], "name": src["name"], "kind": src["kind"], "max_age_minutes": src["max_age_min"]}
+        if src["kind"] == "geoip":
+            try:
+                problem = geoip_problem()
+            except Exception as e:  # noqa: BLE001
+                problem = f"the check itself failed: {type(e).__name__}: {e}"
+            rec.update(status="stale" if problem else "healthy", last_event=None, age_minutes=None, reason=problem)
+            out.append(rec)
+            continue
         if src["kind"] == "reader":
             entry = reader_health.status(src["reader"])
             if entry is None:
@@ -158,7 +207,15 @@ def run() -> List[Dict[str, Any]]:
     for rec in current:
         was = previous.get(rec["id"], {}).get("status")
         rec["since"] = previous.get(rec["id"], {}).get("since", now) if was == rec["status"] else now
-        if rec["status"] == "stale" and was != "stale" and rec["kind"] == "reader":
+        if rec["status"] == "stale" and was != "stale" and rec["kind"] == "geoip":
+            emit_alert(Alert(
+                type="intrusion", severity="medium", detector="source_health",
+                title="Alert geolocation is not working",
+                description=("Alerts are not getting the location of the IP addresses they come from, which the analysts use "
+                             f"to see where connections originate. Reason: {rec.get('reason')}. Databases: data/GeoLite2-Country.mmdb "
+                             "and data/GeoLite2-City.mmdb (links to files installed by other packages: a package removal breaks them)."),
+                details={"source": rec["id"], "reason": rec.get("reason"), "change": "stale"}), echo=False)
+        elif rec["status"] == "stale" and was != "stale" and rec["kind"] == "reader":
             emit_alert(Alert(
                 type="intrusion", severity="medium", detector="source_health",
                 title=f"Log reader cannot parse its input: {rec['name']}",
@@ -182,6 +239,7 @@ def run() -> List[Dict[str, Any]]:
                 type="intrusion", severity="normal", detector="source_health",
                 title=f"Data source recovered: {rec['name']}",
                 description=(f"'{rec['name']}' is parsing its input again." if rec["kind"] == "reader"
+                             else "Alerts are being located again." if rec["kind"] == "geoip"
                              else f"'{rec['name']}' is producing data again."),
                 details={"source": rec["id"], "change": "recovered"}), echo=False)
     _save_state({"checked": now, "sources": current})
@@ -192,4 +250,4 @@ if __name__ == "__main__":
     for s in run():
         age = "n/a" if s["age_minutes"] is None else f"{s['age_minutes']:.0f} min ago"
         limit = "parse check" if s["kind"] == "reader" else f"limit {s['max_age_minutes']} min"
-        print(f"  [{s['status']:7}] {s['name']:28} last data {age} ({limit})")
+        print(f"  [{s['status']:7}] {s['name']:28} last data {age} ({limit})" + (f" -- {s['reason']}" if s.get("reason") else ""))

@@ -1546,6 +1546,27 @@ def inner() -> int:
         GE._readers.update(country=None, city=None)
         check("with no database at all it is a quiet no-op (and the doctor's status says so)",
               GE.geolocate("5.5.5.5") is None and GE.status()["available"] is False)
+
+        # the health check: geolocation must never again be off without anyone being told
+        import source_health as SH
+        import time as _t
+        prob = SH.geoip_problem([])
+        check("source health reports missing databases, naming the files", prob and "MISSING" in prob and "GeoLite2" in prob, str(prob))
+        GE._readers["country"] = FakeCountry({"8.8.8.8": ("US", "United States")})
+        iso = lambda ago_h: datetime.fromtimestamp(_t.time() - ago_h * 3600, tz=timezone.utc).isoformat()
+        mk = lambda **kw: {"title": "x", "source_ip": "5.5.5.5", "timestamp": iso(1), "details": {}, **kw}
+        check("working databases and no recent public-IP alerts: healthy", SH.geoip_problem([]) is None)
+        check("a recent public-IP alert WITHOUT a location is a problem (a service on old code, or a broken step)",
+              "carry no location" in (SH.geoip_problem([mk()]) or ""))
+        check("...not when it has one, is a test, is internal, or is older than 6 hours",
+              SH.geoip_problem([mk(details={"geo": {"country_code": "DE"}}), mk(test=True), mk(source_ip="10.0.0.5"),
+                                mk(timestamp=iso(7))]) is None)
+        GE._readers["country"] = FakeCountry({"8.8.8.8": ("DE", "Germany")})
+        check("a lookup that returns the wrong country for the probe address is a problem too",
+              SH.geoip_problem([]) is not None)
+        check("the source is registered and shows as a source with a reason when unhealthy",
+              any(x["id"] == "geolocation" and x["kind"] == "geoip" for x in SH.SOURCES)
+              and next(r for r in SH.check() if r["id"] == "geolocation")["status"] == "stale")
     finally:
         GE._readers.update(saved_readers)
         GE._next_try.update(city=0.0, country=0.0)

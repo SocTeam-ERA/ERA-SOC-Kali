@@ -335,8 +335,13 @@ def check_platform() -> None:
         check(WARN, f"data sources: health last checked {age_min:.0f} min ago -- is soc-watchdog.timer running?")
     for src in state["sources"]:
         if src["status"] == "stale":
-            check(WARN, f"data sources: {src['name']} has been silent for {src['age_minutes']:.0f} min "
-                        f"(limit {src['max_age_minutes']})")
+            if src.get("reason"):
+                check(WARN, f"data sources: {src['name']} is not working: {src['reason']}")
+            elif src.get("age_minutes") is None:
+                check(WARN, f"data sources: {src['name']} is unhealthy")
+            else:
+                check(WARN, f"data sources: {src['name']} has been silent for {src['age_minutes']:.0f} min "
+                            f"(limit {src['max_age_minutes']})")
     bad = sum(1 for s in state["sources"] if s["status"] == "stale")
     ok_n = sum(1 for s in state["sources"] if s["status"] == "healthy")
     if not bad:

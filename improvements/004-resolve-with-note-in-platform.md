@@ -28,8 +28,10 @@ topic moved to private drop-ins". Today there is no screen where that can be wri
 2. **Frontend (ERA-SOC):** clicking *Resolve* opens a small text box for the note. It is optional for
    ordinary alerts, and required for critical ones and for AIDE alerts. Show the history in the alert drawer.
 3. **Sync back to the Kali:** when the alert came from the Kali (`details.kali_id` is set by `kali_poll`),
-   the backend calls the Kali's `POST /api/alerts/<kali_id>/status` with the status, the note and the
-   analyst's name. That needs a Kali API key with write permission, stored as a backend secret in Dokploy.
+   the backend calls the Kali's `POST /api/alerts/<kali_id>/status` with the status and the note. That
+   needs a Kali API key with write permission, stored as a backend secret in Dokploy. The Kali records the
+   key's user as the actor and never a name sent by the client (`scripts/soc_api.py`), so the backend puts
+   the analyst's name in the note, e.g. "[jdoe] ntfy topic moved to private drop-ins".
 
 ## What it takes
 

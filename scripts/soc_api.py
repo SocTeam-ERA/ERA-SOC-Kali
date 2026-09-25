@@ -160,10 +160,13 @@ class Handler(BaseHTTPRequestHandler):
         supplied = auth[len("Bearer "):]
         for key in API_KEYS.values():
             if secrets.compare_digest(supplied, key["token"]):
+                self.key_user = key["user"]
                 return key
         return None
     def log_message(self, fmt, *args):
-        print(f"{self.address_string()} - {fmt % args}")
+        # the key's user (never the token) on every request line, so the log shows which key each caller
+        # uses -- e.g. before revoking an old one; "-" = no or unknown key
+        print(f"{self.address_string()} {getattr(self, 'key_user', '-')} - {fmt % args}")
     def do_OPTIONS(self):
         self.send_response(204)
         if CORS:

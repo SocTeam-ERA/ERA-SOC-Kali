@@ -111,7 +111,7 @@ have a stable shape:
 | Path | Parameters | Returns |
 |---|---|---|
 | `/api/health` (no auth) | none | `{"status": "ok", "alerts": <n>, "time"}` |
-| `/api/summary` | none | `{total, by_severity, by_type, by_status}` |
+| `/api/summary` | none | `{total, by_severity, by_type, by_status, active: {total, by_severity, by_type}}`. The first four count every status; `active` counts only what still needs a person (open + acknowledged): use it for "open alerts" tiles |
 | `/api/alerts` | `severity`, `type`, `detector`, `status`, `since`, `status_since`, `limit` (default 100, max 1000) | `{"count", "alerts": [alert…]}` |
 | `/api/alerts/<id>` | none | One alert, or 404 |
 | `/api/alerts/<id>/pcap` | none | The capture file (`Content-Disposition: attachment`), or 404. Only files inside the Kali's capture directory are served |
@@ -241,6 +241,8 @@ GET /api/alerts?status_since=<last status_updated received>&limit=1000
   alerts, and anyone using the Kali's own tools.
 
 ### 5.3 Status changes, platform to Kali
+
+**Who wins.** The Kali's automatic aging (`alert_aging.py`) only ever closes alerts that are `open` and have never had their status set by anyone: it never reopens an alert, never touches an acknowledged one, and leaves alone an alert a person reopened (open with a `status_actor`). So a person's decision in the dashboard always wins over the timer.
 
 When an analyst changes an alert that came from the Kali (the platform keeps its id in
 `details.kali_id`):

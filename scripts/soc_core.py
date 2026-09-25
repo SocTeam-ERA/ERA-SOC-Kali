@@ -1225,7 +1225,12 @@ def summarize() -> Dict[str, Any]:
         by_type[a.get("type", "")] = by_type.get(a.get("type", ""), 0) + 1
         st = a.get("status", "open")
         by_status[st] = by_status.get(st, 0) + 1
-    return {"total": len(real), "by_severity": counts, "by_type": by_type, "by_status": by_status}
+    # "active" = what still needs a person (open or acknowledged); the totals above count every status
+    active = [a for a in real if a.get("status", "open") in ("open", "acknowledged")]
+    act_sev = {s: sum(1 for a in active if a.get("severity") == s) for s in SEVERITIES}
+    act_type = {t: sum(1 for a in active if a.get("type") == t) for t in ALERT_TYPES}
+    return {"total": len(real), "by_severity": counts, "by_type": by_type, "by_status": by_status,
+            "active": {"total": len(active), "by_severity": act_sev, "by_type": act_type}}
 
 
 def _cli() -> int:

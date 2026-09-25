@@ -19,6 +19,7 @@ match is the criteria block of alert_match.py; it must name a detector. Guard ra
   * critical alerts are never aged (a rule that targets them is rejected);
   * only open alerts are touched, never acknowledged ones;
   * an alert linked to an incident (details.incident_id) is never aged;
+  * an alert a person reopened (open, with a status_actor) is never aged: a person's decision beats the timer;
   * each closure goes through set_alert_status, so it has a note, the actor
     "auto-aging" and a line in alert_status_log.jsonl;
   * at most 300 alerts per run; invalid rules are ignored.
@@ -112,6 +113,10 @@ def candidates() -> List[Tuple[Dict[str, Any], Dict[str, Any]]]:
         if a.get("status", "open") != "open" or a.get("severity") == "critical":
             continue
         if (a.get("details") or {}).get("incident_id"):
+            continue
+        if a.get("status_actor"):
+            # open again after someone set its status (only a person reopens: no automatic process sets "open"),
+            # e.g. an analyst reopening it from the platform dashboard. A person's decision beats the timer.
             continue
         for rule in rules:
             if now - _epoch(a.get("timestamp")) >= rule["seconds"] and alert_match.matches(rule["cm"], a):

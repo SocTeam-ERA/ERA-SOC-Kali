@@ -458,6 +458,14 @@ def inner() -> int:
     check("an old CRITICAL alert is left open", st.get(old_crit["id"]) == "open")
     check("an old vulnerability finding is left open", st.get(old_vuln["id"]) == "open")
     check("a recent port alert is left open", st.get(new_port["id"]) == "open")
+    soc_core.set_alert_status(old_port["id"], "open", note="[jdoe] still investigating", actor="platform-backend")
+    alert_aging.run()
+    check("an alert a person reopened (e.g. from the dashboard) is not closed again by the aging timer",
+          {a["id"]: a["status"] for a in feed()}.get(old_port["id"]) == "open")
+    sm = soc_core.summarize()
+    check("the summary also counts only what still needs a person (open + acknowledged) under 'active'",
+          sm["active"]["total"] == sm["by_status"]["open"] + sm["by_status"]["acknowledged"]
+          and sum(sm["active"]["by_severity"].values()) == sm["active"]["total"])
 
     # ---- (added) search -------------------------------------------------------
     group("search")

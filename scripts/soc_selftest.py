@@ -139,6 +139,13 @@ def inner() -> int:
           "runs mid-scan)", CK.unexplained_ifpromisc(["eth2: PACKET SNIFFER(/opt/zeek/bin/zeek[1604], /usr/lib/nmap/nmap[39680])"]) == [])
     check("...but a sniffer nobody expects still is one",
           CK.unexplained_ifpromisc(["eth2: PACKET SNIFFER(/tmp/x/evil-sniffer[1])"]) == ["eth2: unrecognized sniffer(s) evil-sniffer"])
+    check("Claude Code's scratch space (old /tmp/claude-* and current /tmp/user/<uid>/claude-<uid>/) is not an Xor.DDoS finding "
+          "(a repository clone's git hook samples raised 14 false criticals), but other files under /tmp still are",
+          CK.unexplained_xor_ddos(["/tmp/user/1001/claude-1001/-home-x/abc/scratchpad/R/.git/hooks/update.sample [Not from a Debian package]",
+                                   "/tmp/claude-1001/x/y.sh [Not from a Debian package]"]) == []
+          and CK.unexplained_xor_ddos(["/tmp/user/1001/other/evil [Not from a Debian package]",
+                                       "/tmp/evilbin [Not from a Debian package]"]) == [
+              "/tmp/user/1001/other/evil [Not from a Debian package]", "/tmp/evilbin [Not from a Debian package]"])
 
     # ---- osquery -------------------------------------------------------------
     group("osquery")
@@ -1567,6 +1574,30 @@ def inner() -> int:
     check("`since` excludes an entry older than the window",
           "selftest-ancient" not in {r["actor"] for r in soc_activity.feed(since="1h", limit=500)}
           and "selftest-ancient" in {r["actor"] for r in soc_activity.feed(limit=500)})
+
+    # ---- (added) shared logs must stay writable by every user that appends to them --------------------
+    group("shared logs")
+    old_umask = os.umask(0o022)                                    # root's umask: what made the bad file
+    try:
+        f1 = tmp / "shared_append_new.jsonl"
+        with soc_core.open_shared_append(f1) as fh:
+            fh.write("one\n")
+        check("a log created under umask 022 is still group-writable (a root job created alerts_suppressed.jsonl 0644 and "
+              "crashed soc-zeek-forwarder)", (f1.stat().st_mode & 0o777) == 0o664, oct(f1.stat().st_mode & 0o777))
+        f2 = tmp / "shared_append_old.jsonl"
+        f2.write_text("keep\n")
+        os.chmod(f2, 0o644)
+        with soc_core.open_shared_append(f2) as fh:
+            fh.write("two\n")
+        check("an existing 0644 log that we own is repaired to group-writable and appended to, not truncated",
+              (f2.stat().st_mode & 0o777) == 0o664 and f2.read_text() == "keep\ntwo\n")
+        check("the suppressed-alerts log is written through the same helper",
+              "open_shared_append(SUPPRESSED_LOG)" in Path(soc_core.__file__).read_text())
+        import soc_doctor
+        check("the doctor watches the permissions of the suppressed-alerts log and the other shared state files",
+              {"alerts_suppressed.jsonl", "asset_annotation_log.jsonl", "assets.json"} <= set(soc_doctor.STATE_FILES))
+    finally:
+        os.umask(old_umask)
 
     # ---- (added) alert geolocation: two databases, country from the newer one ------------------------
     group("geolocation")

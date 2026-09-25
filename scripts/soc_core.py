@@ -532,7 +532,7 @@ def forward_alert(record: Dict[str, Any]) -> Optional[bool]:
             time.sleep(0.5 * attempt)
     # all attempts failed -> queue for later replay, don't lose the alert
     try:
-        with FAILED_OUTBOX.open("a", encoding="utf-8") as fh:
+        with open_shared_append(FAILED_OUTBOX) as fh:
             fh.write(json.dumps(record) + "\n")
     except OSError:
         pass
@@ -601,6 +601,25 @@ def confirm_demo_on_live_instance() -> None:
     if ans != "yes":
         print("[x] Not confirmed. Aborting.")
         raise SystemExit(2)
+
+
+def open_shared_append(path):
+    """Open `path` for appending, creating it group-writable (0664).
+
+    Several users write the same logs: the services run as the administrator, while the AIDE check and
+    the scan run as root. Whoever creates a file first decides its mode, and root's umask (022) makes it
+    0644, which locks every other user out. That is what happened on 2026-09-25: the AIDE check recreated
+    alerts_suppressed.jsonl as root, and soc-zeek-forwarder crashed with PermissionError on its next
+    suppressed alert. Creating with 0664 and repairing a mode we are allowed to repair keeps that from
+    happening; the directory is setgid, so the group stays `soc`."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o664)
+    try:
+        mode = os.fstat(fd).st_mode
+        if not mode & 0o020:
+            os.fchmod(fd, mode | 0o060)
+    except PermissionError:
+        pass                      # not ours to fix (someone else's 0644): the write below reports it
+    return os.fdopen(fd, "a", encoding="utf-8")
 
 
 def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
@@ -691,7 +710,7 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
         rule = None
     if rule:
         record["suppressed_by"] = rule["id"]
-        with SUPPRESSED_LOG.open("a", encoding="utf-8") as fh:
+        with open_shared_append(SUPPRESSED_LOG) as fh:
             fh.write(json.dumps(record) + "\n")
         if echo:
             print(f"[{record['timestamp']}] SUPPRESSED by {rule['id']}: {record['title']}")
@@ -738,7 +757,7 @@ def emit_alert(alert: Alert, echo: bool = True) -> Dict[str, Any]:
         followup = None
 
     # 1) append-only audit log
-    with ALERTS_LOG.open("a", encoding="utf-8") as fh:
+    with open_shared_append(ALERTS_LOG) as fh:
         fh.write(json.dumps(record) + "\n")
 
     # 2) rolling snapshot (newest first, capped). Locked + atomic: several
@@ -870,7 +889,7 @@ def set_alert_status(alert_id: str, status: str, note: str = "", actor: str = ""
         finally:
             fcntl.flock(lockfh, fcntl.LOCK_UN)
 
-    with ALERT_STATUS_LOG.open("a", encoding="utf-8") as fh:
+    with open_shared_append(ALERT_STATUS_LOG) as fh:
         fh.write(json.dumps({
             "alert_id": alert_id, "old_status": old_status, "new_status": status,
             "note": note, "actor": actor, "timestamp": now,
@@ -1161,7 +1180,7 @@ def set_asset_annotation(mac: str, *, owner: Optional[str] = None,
         assets[mac] = rec
         _save_assets(assets)
 
-    with ASSET_ANNOTATION_LOG.open("a", encoding="utf-8") as fh:
+    with open_shared_append(ASSET_ANNOTATION_LOG) as fh:
         fh.write(json.dumps({"mac": mac, "changed": changed, "actor": actor,
                               "timestamp": now}) + "\n")
     return rec

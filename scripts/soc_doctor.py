@@ -67,6 +67,9 @@ STATE_FILES = [
     "udp_state.json", "udp_state_manual.json",
     "mac_state.json", "alerts.jsonl", "alerts.json",
     ".alerts_snapshot.lock", "alert_status_log.jsonl",
+    # appended by every alert-emitting service AND by root jobs (AIDE, scans): a root-created 0644 copy
+    # crashed soc-zeek-forwarder on 2026-09-25
+    "alerts_suppressed.jsonl", "asset_annotation_log.jsonl", "assets.json", "correlation_state.json",
 ]
 
 

@@ -78,7 +78,10 @@ def _save_state(path: Path, checks: dict) -> None:
         if os.path.exists(tmp):
             os.remove(tmp)
 
-SAFE_TMP_PREFIXES = ("/tmp/claude-",)
+# Claude Code's scratch space: /tmp/claude-<uid>/ on older versions, /tmp/user/<uid>/claude-<uid>/ on current
+# ones (sessions clone repositories and write scripts there, and chkrootkit's Xor.DDoS check flags things such as
+# a clone's .git/hooks/*.sample files; 14 false critical alerts on 2026-09-25).
+SAFE_TMP_RE = re.compile(r"^/tmp/(claude-|user/\d+/claude-\d+/)")
 # nmap is this appliance's own scanner: its raw socket shows up as a "packet sniffer" for as
 # long as a scan runs. Debian's chkrootkit cron.daily job runs at ~00:11, in the middle of the
 # nightly scan cycle (00:04-00:50), so this fires by coincidence of schedules -- confirmed
@@ -133,7 +136,7 @@ def unexplained_suspicious_files(details: list[str]) -> list[str]:
 
 def unexplained_xor_ddos(details: list[str]) -> list[str]:
     paths = [d for d in details if d.startswith("/")]
-    return [p for p in paths if not p.startswith(SAFE_TMP_PREFIXES)]
+    return [p for p in paths if not SAFE_TMP_RE.match(p)]
 
 
 def unexplained_ifpromisc(details: list[str]) -> list[str]:

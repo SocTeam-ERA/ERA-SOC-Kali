@@ -23,6 +23,10 @@
 #    /var/lib/aide/aide.db.new          AIDE's own scratch file
 #    /opt/sentinel-soc/.*/__pycache__   Python bytecode regenerated when project code runs
 #        (the source files themselves are still checked)
+#    /dev                               device nodes: a filesystem the kernel rebuilds at every boot, whose
+#        entries change on their own (sound, tty, DRM). 10 of the 66 AIDE alerts of 2026-09-25 were
+#        /dev noise. chkrootkit still checks /dev for hidden files every night.
+#    /var/lib/sddm                      the graphical login screen's own cache and state
 #
 #  Interim suppression rules in config/suppressions.json (aide-package-manager-paths and
 #  aide-project-bytecode) hide the same noise until this has been applied; they can be
@@ -42,6 +46,8 @@ EXCLUSIONS=(
   '!/var/lib/command-not-found'
   '!/var/lib/aide/aide.db.new'
   '!/opt/sentinel-soc/.*/__pycache__'
+  '!/dev'
+  '!/var/lib/sddm'
 )
 
 [[ -f "$CONF" ]] || { echo "Not found: $CONF"; exit 1; }

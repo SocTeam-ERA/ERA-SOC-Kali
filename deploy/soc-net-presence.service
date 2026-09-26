@@ -1,0 +1,13 @@
+[Unit]
+Description=Sentinel SOC network presence (which known machines answer on their network right now, and since when)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=adelcueto
+WorkingDirectory=/opt/sentinel-soc/scripts
+Environment=SOC_MAX_SNAPSHOT=5000
+# Skip the round while the weekly deep vulnerability scan runs: its traffic makes machines miss ARP probes
+# and would read as machines going down. Exit 1 from ExecCondition skips the run without marking it failed.
+ExecCondition=/bin/sh -c 'case "$(systemctl is-active soc-vuln-scan.service)" in activating|active) exit 1;; esac'
+ExecStart=/usr/bin/python3 /opt/sentinel-soc/scripts/net_presence.py
